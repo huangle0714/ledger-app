@@ -87,9 +87,20 @@
 <script src="./seed-data.js"></script>
 <script src="./app.js"></script>
 <script>
+// 已切换为普通联网网页：不再注册 Service Worker，也不依赖离线缓存。
+// 清理手机上旧版本留下的 Service Worker 和 Cache Storage，避免继续显示旧页面。
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(err => console.warn('SW 注册失败', err));
+  window.addEventListener('load', async () => {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map(registration => registration.unregister()));
+      if ('caches' in window) {
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(cacheName => caches.delete(cacheName)));
+      }
+    } catch (error) {
+      console.warn('清理旧离线缓存失败', error);
+    }
   });
 }
 </script>
