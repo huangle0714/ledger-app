@@ -616,7 +616,7 @@ function extractLegacyData(source) {
   return { cards, annualFees, transactions };
 }
 function loadBytesIntoDb(bytes) {
-  const source = new SQL.Database(bytes); let next;
+  let source = new SQL.Database(bytes); let next;
   try {
     const columns = dbTables(source).includes('cards') ? tableColumns(source, 'cards').map(c => c.toLowerCase()) : [];
     if (columns.includes('bank') && columns.includes('total') && columns.includes('available')) {
@@ -671,3 +671,4 @@ async function boot() {
   }
 }
 boot();
+
