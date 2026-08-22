@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ledger-pwa-v4';
+const CACHE_NAME = 'ledger-pwa-v5';
 const APP_FILES = [
   './',
   './index.html',
@@ -10,7 +10,17 @@ const APP_FILES = [
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_FILES)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async cache => {
+      for (const file of APP_FILES) {
+        try {
+          await cache.add(file);
+        } catch (error) {
+          console.warn('Unable to precache', file, error);
+        }
+      }
+    })
+  );
   self.skipWaiting();
 });
 
@@ -25,23 +35,21 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      caches.match('./index.html').then(cached => cached || fetch(event.request))
+    );
+    return;
+  }
+
   event.respondWith(
-    fetch(event.request).then(response => {
-      const copy = response.clone();
-      caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
-      return response;
-    }).catch(async () => {
-      const cached = await caches.match(event.request);
-      if (cached) return cached;
-
-      // Safari may request the page URL itself while offline. Use the cached
-      // app shell as a final navigation fallback instead of showing a network
-      // error page.
-      if (event.request.mode === 'navigate') {
-        return caches.match('./index.html');
+    caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
       }
-
-      return Response.error();
-    })
+      return response;
+    }))
   );
 });
