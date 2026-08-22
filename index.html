@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="pwa-overrides.css" />
+  <script>if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('./sw.js', { scope: './' }); }); }</script>
 </head>
 <body>
   <main class="phone-shell">
@@ -66,7 +66,7 @@
 
     <section class="page" data-page="settings">
       <div class="profile-card"><div class="profile-avatar">林</div><div><strong>林先生</strong><span>本地账户 · 已同步</span></div><button aria-label="编辑个人资料">›</button></div>
-      <div class="settings-group"><p class="eyebrow">数据与提醒</p><button class="setting-row"><span class="setting-icon orange">◷</span><span>还款提醒</span><i class="toggle on"></i></button><button class="setting-row" data-action="export"><span class="setting-icon green">⇩</span><span>导出本地备份</span><b>JSON</b></button><button class="setting-row" data-action="import"><span class="setting-icon purple">⇧</span><span>导入本地备份</span><b>JSON</b></button></div>
+      <div class="settings-group"><p class="eyebrow">数据与提醒</p><button class="setting-row"><span class="setting-icon blue">↗</span><span>自动同步账单</span><i class="toggle on"></i></button><button class="setting-row"><span class="setting-icon orange">◷</span><span>还款提醒</span><i class="toggle on"></i></button><button class="setting-row"><span class="setting-icon green">▣</span><span>导出数据</span><b>CSV</b></button></div>
     </section>
 
     <nav class="bottom-nav" aria-label="主导航">
