@@ -487,6 +487,18 @@ function updateSyncLabel() {
   el.textContent = dirty ? '本地有改动 · 待同步' : (last ? '上次同步 ' + last : '未同步');
 }
 function dbSizeText() { try { return Math.round(db.export().byteLength / 1024) + ' KB'; } catch (e) { return '—'; } }
+function dbCounts() {
+  try {
+    const count = table => Number(scalar(`SELECT COUNT(*) FROM ${table}`)) || 0;
+    return { cards: count('cards'), transactions: count('transactions'), annualFees: count('annual_fees') };
+  } catch (e) {
+    return { cards: 0, transactions: 0, annualFees: 0 };
+  }
+}
+function dbSummary() {
+  const c = dbCounts();
+  return `${c.cards} 张卡片、${c.transactions} 条流水、${c.annualFees} 条年费记录`;
+}
 function openSync() {
   const cfg = ghCfg();
   const connected = cfg.user && cfg.repo && cfg.token;
@@ -532,9 +544,16 @@ async function doPull() {
     const j = await r.json();
     const bytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
     loadBytesIntoDb(bytes);
+    const counts = dbCounts();
     await persistNow(); dirty = false; updateSyncLabel(); renderAll();
-    if (st) st.textContent = '已从云端恢复 ✓ · ' + dbSizeText();
-    toast('已从云端恢复');
+    if (st) st.textContent = '已从云端恢复 ✓ · ' + dbSizeText() + ' · ' + dbSummary();
+    closeM();
+    go('home');
+    if (counts.cards || counts.transactions || counts.annualFees) {
+      toast(`已恢复 ${counts.cards} 张卡片、${counts.transactions} 条流水`);
+    } else {
+      toast('云端数据库为空,请先在有数据的设备点击立即备份');
+    }
   } catch (e) { if (st) st.textContent = '恢复失败:' + e.message; toast('恢复失败'); }
 }
 function openBackupCfg() {
