@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ledger-pwa-v3';
+const CACHE_NAME = 'ledger-pwa-v4';
 const APP_FILES = [
   './',
   './index.html',
@@ -45,4 +45,3 @@ self.addEventListener('fetch', event => {
     })
   );
 });
-
