@@ -1,58 +1,19 @@
-const CACHE_NAME = 'ledger-pwa-v6';
-const APP_FILES = [
-  './',
-  './index.html',
-  './styles.css',
-  './pwa-overrides.css',
-  './app.js',
-  './seed-data.js',
-  './vendor/sql-wasm.js',
-  './vendor/sql-wasm.wasm',
-  './manifest.webmanifest',
-  './icon.svg'
-];
-
+// 账务管家已切换为普通联网网页。
+// 该脚本只负责让旧版本 Service Worker 自我注销并清理历史缓存。
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(async cache => {
-      for (const file of APP_FILES) {
-        try {
-          await cache.add(file);
-        } catch (error) {
-          console.warn('Unable to precache', file, error);
-        }
-      }
-    })
-  );
   self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(keys => Promise.all(
-      keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))
-    ))
+    Promise.all([
+      caches.keys().then(keys => Promise.all(keys.map(key => caches.delete(key)))),
+      self.registration.unregister()
+    ]).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET') return;
-
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      caches.match('./index.html').then(cached => cached || fetch(event.request))
-    );
-    return;
-  }
-
-  event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
-      if (response.ok) {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
-      }
-      return response;
-    }))
-  );
+  // 普通网页模式：所有请求直接走网络，不读取或写入缓存。
+  event.respondWith(fetch(event.request));
 });
