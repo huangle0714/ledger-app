@@ -21,3 +21,8 @@ Package.resolved
 
 # Local preview artifacts
 *.log
+
+# 真实财务数据(含姓名/卡尾号/余额),严禁提交到公开仓库
+# 本地测试用,部署后在手机上通过「导入 .db」载入,或从私有备份仓库恢复
+seed-data.js
+*.db

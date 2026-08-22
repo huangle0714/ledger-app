@@ -1,41 +1,602 @@
-const seedCards = [
-  {bank:'招商银行',short:'招行',mark:'blue',last:'8019',limit:50000,used:1463,due:'8月1日',status:'已还清',urgent:false},
-  {bank:'中国银行',short:'中行',mark:'red',last:'6131',limit:80000,used:11427,due:'8月2日',status:'待还款',urgent:true},
-  {bank:'交通银行',short:'交行',mark:'orange',last:'4905',limit:193242,used:101379,due:'8月3日',status:'待还款',urgent:true},
-  {bank:'工商银行',short:'工行',mark:'red',last:'2118',limit:64500,used:16547,due:'8月5日',status:'已还清',urgent:false},
-  {bank:'平安银行',short:'平安',mark:'teal',last:'6787',limit:100000,used:3049,due:'8月6日',status:'已还清',urgent:false},
-  {bank:'浦发银行',short:'浦发',mark:'purple',last:'2306',limit:0,used:0,due:'8月7日',status:'未使用',urgent:false},
-  {bank:'建设银行',short:'建行',mark:'blue',last:'4666',limit:120000,used:72409,due:'8月8日',status:'待还款',urgent:true},
-  {bank:'广发银行',short:'广发',mark:'orange',last:'4078',limit:200000,used:59133.03,due:'8月10日',status:'已还清',urgent:false},
-  {bank:'上海银行',short:'上海',mark:'teal',last:'7142',limit:120000,used:72370.70,due:'8月11日',status:'待还款',urgent:false},
-  {bank:'农业银行',short:'农行',mark:'teal',last:'7280',limit:75000,used:12749,due:'8月13日',status:'已还清',urgent:false},
-  {bank:'民生银行',short:'民生',mark:'purple',last:'5815',limit:50000,used:1383,due:'8月14日',status:'已还清',urgent:false},
-  {bank:'兴业银行',short:'兴业',mark:'blue',last:'7752',limit:120000,used:71787,due:'8月16日',status:'待还款',urgent:false}
-];
-let cards = [];
-const DB_NAME = 'ledger-local-db', DB_VERSION = 1, STORE = 'cards';
-const money = n => `¥${Number(n || 0).toLocaleString('zh-CN',{minimumFractionDigits:Number(n)%1?2:0,maximumFractionDigits:2})}`;
-const clone = value => JSON.parse(JSON.stringify(value));
-function openDb() { return new Promise((resolve,reject) => { if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable')); const r = indexedDB.open(DB_NAME,DB_VERSION); r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:'id',autoIncrement:true}); r.onsuccess=()=>resolve(r.result); r.onerror=()=>reject(r.error); }); }
-async function loadCards() { const raw=localStorage.getItem('ledger-cards'); if(raw) { try { return JSON.parse(raw); } catch(_) {} } const initial=clone(seedCards); localStorage.setItem('ledger-cards',JSON.stringify(initial)); try { await saveAll(initial); } catch(_) {} return initial; }
-async function saveAll(rows) { const clean=rows.map(row=>{const copy={...row};if(copy.id===undefined)delete copy.id;return copy}); localStorage.setItem('ledger-cards',JSON.stringify(clean)); try { const db=await openDb(); await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite'),store=tx.objectStore(STORE);store.clear();clean.forEach(row=>store.add(row));tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);}); } catch(_) {} }
-function saveCards(){return saveAll(cards)}
-function totals(){const limit=cards.reduce((s,c)=>s+Number(c.limit||0),0),used=cards.reduce((s,c)=>s+Number(c.used||0),0);return{limit,used,available:Math.max(0,limit-used),percent:limit?Math.min(100,used/limit*100):0}}
-function cardHtml(c){return `<button class="card-item" data-card="${c.last}"><span class="bank-mark ${c.mark}">${c.short}</span><span class="card-main"><strong class="card-name">${c.bank}</strong><span class="card-sub">信用卡 · 尾号 ${c.last}</span></span><span class="card-right"><strong class="card-amount">${money(c.used)}</strong><span class="card-due ${c.urgent?'':'ok'}">${c.due} · ${c.status}</span></span><span class="chevron">›</span></button>`}
-function billHtml(c){return `<article class="bill-item"><div class="bill-top"><span class="bill-date">${c.due} · ${c.bank}</span><span class="bill-status ${c.status==='已还清'?'green':''}">${c.status}</span></div><div class="bill-bank"><span class="bank-mark ${c.mark}" style="width:26px;height:26px;border-radius:8px;font-size:9px">${c.short}</span><span>尾号 ${c.last}</span><strong class="bill-amount">${money(c.used)}</strong></div><div class="bill-bottom"><span>预计最低还款 ${money(Math.round(c.used*.1))}</span><span>账单日 · 本地记录</span></div></article>`}
-function render(){const t=totals();document.querySelector('.hero-number').innerHTML=`${money(t.limit)}<span class="hero-unit">总额度</span>`;document.querySelector('.usage-track span').style.width=`${t.percent}%`;document.querySelector('.usage-meta').innerHTML=`<span>已用 ${money(t.used)}</span><strong>${t.percent.toFixed(1)}%</strong>`;document.querySelector('.summary-grid').innerHTML=`<div><span>固定额度</span><strong>${money(t.limit)}</strong></div><div><span>临时额度</span><strong>¥0</strong></div><div><span>可用额度</span><strong>${money(t.available)}</strong></div>`;const urgent=cards.filter(c=>c.urgent&&c.status!=='已还清');document.querySelector('.repayment-alert strong').textContent=`${urgent.length} 笔账单即将到期`;document.querySelector('.repayment-alert small').textContent=urgent.length?`最近还款日 · ${urgent[0].due}`:'当前没有待处理账单';document.getElementById('homeCards').innerHTML=cards.slice(0,4).map(cardHtml).join('');document.getElementById('allCards').innerHTML=cards.map(cardHtml).join('');document.getElementById('billList').innerHTML=urgent.map(billHtml).join('')||'<p class="muted">暂无待还款账单</p>';document.getElementById('cardsCount').textContent=`${cards.length} 张卡片`;document.querySelector('[data-filter="all"] span').textContent=cards.length;document.querySelector('[data-filter="urgent"] span').textContent=urgent.length;bindCards()}
-const pageTitle={home:'总览',cards:'我的卡片',repayment:'还款',settings:'设置'};
-function go(page){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.dataset.page===page));document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.nav===page));document.getElementById('pageTitle').textContent=pageTitle[page];window.scrollTo({top:0,behavior:'smooth'})}
-function bindCards(){document.querySelectorAll('[data-card]').forEach(el=>el.addEventListener('click',()=>openCard(el.dataset.card)))}
-function showModal(){const m=document.getElementById('modalBackdrop');m.classList.add('show');m.setAttribute('aria-hidden','false')}
-function closeModal(){const m=document.getElementById('modalBackdrop');m.classList.remove('show');m.setAttribute('aria-hidden','true')}
-function inputForm(c={}){return `<div class="detail-grid"><label class="detail-cell"><span>发卡银行</span><input class="modal-input" data-field="bank" value="${c.bank||''}" placeholder="例如 招商银行"></label><label class="detail-cell"><span>卡号后四位</span><input class="modal-input" data-field="last" inputmode="numeric" maxlength="4" value="${c.last||''}" placeholder="8019"></label><label class="detail-cell"><span>总额度</span><input class="modal-input" data-field="limit" inputmode="decimal" value="${c.limit??''}" placeholder="50000"></label><label class="detail-cell"><span>已用额度</span><input class="modal-input" data-field="used" inputmode="decimal" value="${c.used??''}" placeholder="0"></label><label class="detail-cell"><span>还款日</span><input class="modal-input" data-field="due" value="${c.due||''}" placeholder="每月 1 日"></label><label class="detail-cell"><span>状态</span><select class="modal-input" data-field="status"><option ${c.status==='待还款'?'selected':''}>待还款</option><option ${c.status==='已还清'?'selected':''}>已还清</option><option ${c.status==='未使用'?'selected':''}>未使用</option></select></label></div>`}
-function openCard(last){const c=cards.find(x=>x.last===last);if(!c)return;document.getElementById('modalTitle').textContent='卡片详情';document.getElementById('modalBody').innerHTML=`<div class="detail-hero"><span class="bank-mark ${c.mark}">${c.short}</span><div><strong>${c.bank}</strong><span>信用卡 · 尾号 ${c.last}</span></div></div><div class="detail-amount">${money(c.used)}</div><div class="detail-caption">当前已用额度</div><div class="detail-progress"><span style="width:${c.limit?Math.min(100,c.used/c.limit*100):0}%"></span></div><div class="detail-grid"><div class="detail-cell"><span>总额度</span><strong>${money(c.limit)}</strong></div><div class="detail-cell"><span>可用额度</span><strong>${money(Math.max(0,c.limit-c.used))}</strong></div></div><div class="detail-row"><span>还款日</span><strong>${c.due}</strong></div><div class="detail-row"><span>状态</span><strong>${c.status}</strong></div><button class="primary-action" data-action="edit">编辑卡片信息</button>`;document.querySelector('[data-action="edit"]').addEventListener('click',()=>openEdit(c));showModal()}
-function openEdit(c){document.getElementById('modalTitle').textContent='编辑卡片信息';document.getElementById('modalBody').innerHTML=`${inputForm(c)}<button class="primary-action" data-action="save">保存修改</button><button class="secondary-action" data-action="delete">删除这张卡片</button>`;document.querySelector('[data-action="save"]').addEventListener('click',()=>saveForm(c));document.querySelector('[data-action="delete"]').addEventListener('click',async()=>{if(!confirm('确定删除这张卡片吗？'))return;cards=cards.filter(x=>x!==c);await saveCards();closeModal();render()})}
-async function saveForm(existing){const get=k=>document.querySelector(`[data-field="${k}"]`).value.trim(),bank=get('bank'),last=get('last'),limit=Number(get('limit')),used=Number(get('used')),due=get('due'),status=get('status');if(!bank||!/\d{4}/.test(last)||!Number.isFinite(limit)||limit<0||!Number.isFinite(used)||used<0||!due)return alert('请填写完整且有效的卡片信息');const target=existing||{id:undefined};Object.assign(target,{bank,short:bank.slice(0,2),mark:existing?.mark||['blue','teal','orange','purple','red'][cards.length%5],last,limit,used,due,status,urgent:status==='待还款'});if(!existing)cards.unshift(target);await saveCards();closeModal();render()}
-function exportData(){const blob=new Blob([JSON.stringify(cards,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`账务管家备份-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url)}
-function importData(){const input=document.createElement('input');input.type='file';input.accept='application/json';input.onchange=async()=>{try{const parsed=JSON.parse(await input.files[0].text());if(!Array.isArray(parsed))throw new Error();cards=parsed;await saveCards();render();alert('数据已恢复')}catch(_){alert('备份文件格式不正确')}};input.click()}
-document.querySelectorAll('[data-nav]').forEach(el=>el.addEventListener('click',()=>go(el.dataset.nav)));document.querySelector('[data-action="settings"]').addEventListener('click',()=>go('settings'));document.querySelector('[data-action="filter"]').addEventListener('click',()=>document.getElementById('filterRow').classList.toggle('show'));document.querySelectorAll('.chip').forEach(chip=>chip.addEventListener('click',()=>{document.querySelectorAll('.chip').forEach(c=>c.classList.remove('selected'));chip.classList.add('selected');filterCards()}));document.getElementById('searchInput').addEventListener('input',filterCards);function filterCards(){const q=document.getElementById('searchInput').value.trim().toLowerCase(),active=document.querySelector('.chip.selected')?.dataset.filter||'all';let list=cards.filter(c=>!q||`${c.bank}${c.last}${c.short}`.toLowerCase().includes(q));if(active==='urgent')list=list.filter(c=>c.urgent&&c.status!=='已还清');if(active==='available')list=list.filter(c=>c.limit-c.used>0);document.getElementById('allCards').innerHTML=list.map(cardHtml).join('');document.getElementById('cardsCount').textContent=`${list.length} 张卡片`;bindCards()}
-document.getElementById('modalBackdrop').addEventListener('click',e=>{if(e.target.id==='modalBackdrop'||e.target.closest('[data-action="close"]'))closeModal()});document.querySelector('[data-action="add"]').addEventListener('click',()=>{document.getElementById('modalTitle').textContent='添加新卡片';document.getElementById('modalBody').innerHTML=`${inputForm({status:'待还款'})}<button class="primary-action" data-action="save">保存卡片</button>`;document.querySelector('[data-action="save"]').addEventListener('click',()=>saveForm());showModal()});document.querySelector('[data-action="refresh"]').addEventListener('click',e=>{e.currentTarget.textContent='✓';setTimeout(()=>e.currentTarget.textContent='↻',1000)});document.querySelector('[data-action="export"]').addEventListener('click',exportData);document.querySelector('[data-action="import"]').addEventListener('click',importData);
-loadCards().then(rows=>{cards=rows;render()}).catch(()=>{cards=clone(seedCards);render()});
-if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js'));
+/* 账务管家 PWA — 本地 SQLite(sql.js) + xyk 功能移植
+ * 数据只存本机(IndexedDB 保存 SQLite 二进制),可一键备份到 GitHub 私有仓库。 */
+'use strict';
+
+const DEFAULT_FEE_RATE = 0.0025;
+const DB_KEY = 'sqlite';
+const PASS_KEY = 'ledger-pass';
+const GH_KEY = 'ledger-gh';
+const SYNC_TIME_KEY = 'ledger-sync-time';
+const DEFAULT_PASS = '85168377';
+const MARKS = ['blue', 'orange', 'purple', 'teal', 'red'];
+const titles = { home: '总览', cards: '我的卡片', repayment: '还款', settings: '设置' };
+
+let SQL = null;      // sql.js 模块
+let db = null;       // 当前数据库
+let sortKey = 'repayDay';
+let selectedDate = todayStr();
+let dirty = false;   // 本地有未同步改动
+
+/* ---------- 基础工具 ---------- */
+function pad(n) { return String(n).padStart(2, '0'); }
+function todayStr() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function nowTime() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function nowStamp() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function yuan(n) { return '¥' + Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
+function signed(n) { return (n < 0 ? '-' : '+') + '¥' + Math.abs(n).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function markColor(s) { let h = 0; for (const ch of String(s || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return MARKS[h % MARKS.length]; }
+function shortName(bank) { return (String(bank || '卡').replace(/银行|信用卡|股份|有限公司/g, '').slice(0, 2)) || '卡'; }
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2200); }
+
+/* ---------- IndexedDB(保存 SQLite 二进制) ---------- */
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('ledger-store', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbSet(k, v) { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+async function idbGet(k) { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readonly'); const q = t.objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+/* ---------- SQL 查询封装 ---------- */
+function all(sql, params = []) { const s = db.prepare(sql); s.bind(params); const out = []; while (s.step()) out.push(s.getAsObject()); s.free(); return out; }
+function run(sql, params = []) { const s = db.prepare(sql); s.bind(params); s.step(); s.free(); }
+function scalar(sql, params = []) { const r = all(sql, params); return r.length ? Object.values(r[0])[0] : null; }
+function nextId(table) { return (Number(scalar(`SELECT MAX(id) FROM ${table}`)) || 0) + 1; }
+
+/* ---------- 建库 / 载入 / 持久化 ---------- */
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS cards(
+  id INTEGER PRIMARY KEY, user TEXT, bank TEXT, name TEXT, tail TEXT,
+  total REAL NOT NULL DEFAULT 0, fixed REAL NOT NULL DEFAULT 0, temporary REAL NOT NULL DEFAULT 0,
+  available REAL NOT NULL DEFAULT 0, billDay TEXT, repayDay TEXT);
+CREATE TABLE IF NOT EXISTS annual_fees(
+  id INTEGER, cardId INTEGER, name TEXT, chargeDate TEXT, requirement TEXT, status TEXT, note TEXT,
+  PRIMARY KEY(cardId, id));
+CREATE TABLE IF NOT EXISTS transactions(
+  id INTEGER PRIMARY KEY, cardId INTEGER, date TEXT, time TEXT, createdAt TEXT,
+  amount REAL NOT NULL DEFAULT 0, note TEXT, type TEXT, feeRate REAL);`;
+
+function seedFrom(data) {
+  db.exec('BEGIN');
+  (data.cards || []).forEach(c => run(
+    `INSERT INTO cards(id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+    [c.id, c.user, c.bank, c.name, c.tail, Number(c.total || 0), Number(c.fixed || 0), Number(c.temporary || 0), Number(c.available || 0), c.billDay, c.repayDay]));
+  (data.annualFees || []).forEach(f => run(
+    `INSERT INTO annual_fees(id,cardId,name,chargeDate,requirement,status,note) VALUES(?,?,?,?,?,?,?)`,
+    [f.id, f.cardId, f.name, f.chargeDate, f.requirement, f.status, f.note]));
+  (data.transactions || []).forEach(t => run(
+    `INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate) VALUES(?,?,?,?,?,?,?,?,?)`,
+    [t.id, t.cardId, t.date, t.time, t.createdAt, Number(t.amount || 0), t.note, t.type, t.type === 'repayment' ? null : Number(t.feeRate != null ? t.feeRate : DEFAULT_FEE_RATE)]));
+  db.exec('COMMIT');
+}
+
+async function openDatabase() {
+  SQL = await initSqlJs({ locateFile: f => './vendor/' + f });
+  const saved = await idbGet(DB_KEY);
+  if (saved && saved.byteLength) {
+    db = new SQL.Database(new Uint8Array(saved));
+  } else {
+    db = new SQL.Database();
+    db.exec(SCHEMA);
+    if (window.SEED_DATA) seedFrom(window.SEED_DATA);
+    await persistNow();
+  }
+}
+async function persistNow() { const bytes = db.export(); await idbSet(DB_KEY, bytes); }
+async function persist() { await persistNow(); dirty = true; updateSyncLabel(); }
+/* ---------- 业务逻辑(忠实移植 xyk) ---------- */
+function getFeeRate(t) { const r = Number(t.feeRate); return Number.isFinite(r) && r >= 0 ? r : DEFAULT_FEE_RATE; }
+function getFeeAmount(t) { return Number(t.amount || 0) * getFeeRate(t); }
+function parseDate(s) { return new Date(`${s}T00:00:00`); }
+function fmtDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function monthLen(y, m) { return new Date(y, m + 1, 0).getDate(); }
+function dateWithDay(y, m, day) { return new Date(y, m, Math.min(day, monthLen(y, m))); }
+function addMonthsClamped(d, m) { return dateWithDay(d.getFullYear(), d.getMonth() + m, d.getDate()); }
+function parseBillDay(s) { const m = String(s || '').match(/每月(\d{1,2})号/); return m ? Number(m[1]) : null; }
+function parseRepayDate(s) { const m = String(s || '').match(/\d{4}-\d{2}-\d{2}/); return m ? m[0] : null; }
+function getRepayMode(s) { return String(s || '').startsWith('顺延') ? '顺延' : '固定'; }
+function getEffectiveRepayDate(s, ref = todayStr()) {
+  const orig = parseRepayDate(s); if (!orig) return null;
+  const r = parseDate(ref); let d = parseDate(orig);
+  while (d < r) d = addMonthsClamped(d, 1);
+  return fmtDate(d);
+}
+function getEffectiveRepayDay(c) { const d = getEffectiveRepayDate(c.repayDay); return d ? `${getRepayMode(c.repayDay)}：${d}` : (c.repayDay || '—'); }
+function isRepayOn(c, dateStr) { return getEffectiveRepayDate(c.repayDay) === dateStr; }
+function isBillOn(c, dateStr) { const bd = parseBillDay(c.billDay); if (!bd) return false; return parseDate(dateStr).getDate() === bd; }
+
+/* ---------- 数据读取 ---------- */
+function getCards() { return all('SELECT * FROM cards ORDER BY id'); }
+function getCard(id) { const r = all('SELECT * FROM cards WHERE id=?', [id]); return r[0] || null; }
+function getFees(cardId) { return all('SELECT * FROM annual_fees WHERE cardId=? ORDER BY id', [cardId]); }
+function getTx(cardId) { return all('SELECT * FROM transactions WHERE cardId=? ORDER BY date DESC, id DESC', [cardId]); }
+function allTx() { return all('SELECT * FROM transactions ORDER BY date DESC, id DESC'); }
+
+function sortedCards() {
+  const rows = getCards();
+  if (sortKey === 'user') return rows.sort((a, b) => String(a.user).localeCompare(String(b.user), 'zh-Hans-CN', { sensitivity: 'base' }) || String(a.tail).localeCompare(String(b.tail)));
+  if (sortKey === 'billDay') return rows.sort((a, b) => (parseBillDay(a.billDay) || 99) - (parseBillDay(b.billDay) || 99) || String(a.tail).localeCompare(String(b.tail)));
+  if (sortKey === 'repayDay') return rows.sort((a, b) => (getEffectiveRepayDate(a.repayDay) || '9999-12-31').localeCompare(getEffectiveRepayDate(b.repayDay) || '9999-12-31') || String(a.tail).localeCompare(String(b.tail)));
+  return rows;
+}
+
+/* ---------- 额度反算(同 xyk server) ---------- */
+function applyToAvailable(available, total, tx) {
+  const amt = Number(tx.amount || 0);
+  if (tx.type === 'repayment') return Math.min(total, available + amt);
+  return Math.max(0, available - amt);
+}
+function reverseFromAvailable(available, total, tx) {
+  const amt = Number(tx.amount || 0);
+  if (tx.type === 'repayment') return Math.max(0, available - amt);
+  return Math.min(total, available + amt);
+}
+/* ---------- 数据写入 ---------- */
+async function addTransaction(cardId, input) {
+  const card = getCard(cardId); if (!card) return;
+  const type = input.type === 'repayment' ? 'repayment' : 'spend';
+  const feeRate = type === 'repayment' ? null : (Number.isFinite(Number(input.feeRate)) && Number(input.feeRate) >= 0 ? Number(input.feeRate) : DEFAULT_FEE_RATE);
+  const tx = { cardId, date: input.date, time: input.time || nowTime(), createdAt: nowStamp(), amount: Number(input.amount || 0), note: input.note || (type === 'repayment' ? '还款' : '消费'), type, feeRate };
+  const id = nextId('transactions');
+  run(`INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate) VALUES(?,?,?,?,?,?,?,?,?)`,
+    [id, tx.cardId, tx.date, tx.time, tx.createdAt, tx.amount, tx.note, tx.type, tx.feeRate]);
+  const avail = applyToAvailable(Number(card.available), Number(card.total), tx);
+  run('UPDATE cards SET available=? WHERE id=?', [avail, cardId]);
+  await persist();
+}
+async function deleteTransaction(id) {
+  const r = all('SELECT * FROM transactions WHERE id=?', [id]); if (!r.length) return;
+  const tx = r[0]; const card = getCard(tx.cardId);
+  if (card) run('UPDATE cards SET available=? WHERE id=?', [reverseFromAvailable(Number(card.available), Number(card.total), tx), card.id]);
+  run('DELETE FROM transactions WHERE id=?', [id]);
+  await persist();
+}
+async function addCard(input) {
+  const fixed = Number(input.fixed || 0), temporary = Number(input.temporary || 0);
+  const id = nextId('cards');
+  run(`INSERT INTO cards(id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, input.user || '', input.bank || '', input.name || '', input.tail || '', fixed + temporary, fixed, temporary, Number(input.available != null ? input.available : fixed + temporary), input.billDay || '', input.repayDay || '']);
+  await persist(); return id;
+}
+async function updateCard(id, input) {
+  const fixed = Number(input.fixed || 0), temporary = Number(input.temporary || 0);
+  run(`UPDATE cards SET user=?,bank=?,name=?,tail=?,total=?,fixed=?,temporary=?,available=?,billDay=?,repayDay=? WHERE id=?`,
+    [input.user || '', input.bank || '', input.name || '', input.tail || '', fixed + temporary, fixed, temporary, Number(input.available || 0), input.billDay || '', input.repayDay || '', id]);
+  await persist();
+}
+async function deleteCard(id) {
+  run('DELETE FROM transactions WHERE cardId=?', [id]);
+  run('DELETE FROM annual_fees WHERE cardId=?', [id]);
+  run('DELETE FROM cards WHERE id=?', [id]);
+  await persist();
+}
+async function saveFee(cardId, feeId, input) {
+  if (feeId == null) {
+    const id = (Number(scalar('SELECT MAX(id) FROM annual_fees WHERE cardId=?', [cardId])) || 0) + 1;
+    run(`INSERT INTO annual_fees(id,cardId,name,chargeDate,requirement,status,note) VALUES(?,?,?,?,?,?,?)`,
+      [id, cardId, input.name || '年费', input.chargeDate || '未设置', input.requirement || '未设置', input.status || 'pending', input.note || '']);
+  } else {
+    run(`UPDATE annual_fees SET name=?,chargeDate=?,requirement=?,status=?,note=? WHERE cardId=? AND id=?`,
+      [input.name || '年费', input.chargeDate || '未设置', input.requirement || '未设置', input.status || 'pending', input.note || '', cardId, feeId]);
+  }
+  await persist();
+}
+async function deleteFee(cardId, feeId) { run('DELETE FROM annual_fees WHERE cardId=? AND id=?', [cardId, feeId]); await persist(); }
+/* ---------- 渲染 ---------- */
+function feeChip(cardId) { const fs = getFees(cardId); if (!fs.length) return '<span class="fee-chip">无年费规则</span>'; return `<span class="fee-chip">年费 ${fs.length} 条规则</span>`; }
+function cardUsed(c) { return Math.max(0, Number(c.total) - Number(c.available)); }
+function cardStatus(c) { return Number(c.available) >= Number(c.total) ? '已还清' : '待还款'; }
+function cardItemHTML(c) {
+  const used = cardUsed(c), status = cardStatus(c), mark = markColor(c.bank);
+  const due = getEffectiveRepayDate(c.repayDay);
+  return `<button class="card-item" onclick="openCard(${c.id})"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
+    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}</strong>` +
+    `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span>${feeChip(c.id)}</span>` +
+    `<span class="card-right"><strong class="card-amount">已用 ${yuan(used)}</strong>` +
+    `<span class="card-due ${status === '已还清' ? 'ok' : ''}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span></span><span class="chevron">›</span></button>`;
+}
+function renderHome() {
+  const cs = getCards();
+  const t = cs.reduce((a, c) => { a.total += +c.total; a.fixed += +c.fixed; a.temp += +c.temporary; a.avail += +c.available; return a; }, { total: 0, fixed: 0, temp: 0, avail: 0 });
+  const used = Math.max(0, t.total - t.avail), pct = t.total ? Math.min(100, used / t.total * 100) : 0;
+  document.getElementById('heroTotal').innerHTML = `${yuan(t.total)}<span class="hero-unit">总额度</span>`;
+  document.getElementById('heroBar').style.width = pct + '%';
+  document.getElementById('heroUsed').textContent = '已用 ' + yuan(used);
+  document.getElementById('heroPct').textContent = pct.toFixed(1) + '%';
+  document.getElementById('heroFixed').textContent = yuan(t.fixed);
+  document.getElementById('heroTemp').textContent = yuan(t.temp);
+  document.getElementById('heroAvail').textContent = yuan(t.avail);
+  document.getElementById('homeCards').innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片,去设置里添加</div>';
+}
+function renderCards() {
+  const cs = sortedCards();
+  document.getElementById('cardsCount').textContent = cs.length + ' 张卡片';
+  document.getElementById('allCards').innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片</div>';
+}
+function flowItemHTML(tx, tap) {
+  const card = getCard(tx.cardId) || {};
+  const isPay = tx.type === 'repayment';
+  const k = isPay ? 'pay' : 'out';
+  const amt = (isPay ? 1 : -1) * Number(tx.amount || 0);
+  const settle = isPay ? '' : ` · 到账 ${yuan(Number(tx.amount || 0) - getFeeAmount(tx))}`;
+  return `<div class="flow-item ${tap ? 'tap' : ''}" ${tap ? `onclick="confirmDelTx(${tx.id})"` : ''}>` +
+    `<span class="flow-ic ${k}">${isPay ? '↓' : '↑'}</span>` +
+    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}</span>` +
+    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}</span></span>` +
+    `<span class="flow-amt ${k}">${signed(amt)}</span></div>`;
+}
+function renderRepayment() {
+  const cs = getCards();
+  const base = parseDate(selectedDate);
+  document.getElementById('calMonthLabel').textContent = `${base.getFullYear()} 年 ${base.getMonth() + 1} 月`;
+  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  let html = '';
+  for (let off = -3; off <= 3; off++) {
+    const d = new Date(base); d.setDate(base.getDate() + off);
+    const ds = fmtDate(d);
+    const isDue = cs.some(c => isRepayOn(c, ds));
+    const isBill = cs.some(c => isBillOn(c, ds));
+    const cls = [ds === selectedDate ? 'selected-day' : '', ds === todayStr() ? 'today' : '', isDue ? 'due-day' : '', isBill ? 'bill-day' : ''].filter(Boolean).join(' ');
+    const lbl = ds === todayStr() ? '今天' : week[d.getDay()];
+    html += `<span class="${cls}" onclick="selDay('${ds}')"><small>${lbl}</small>${d.getDate()}${(isDue || isBill) ? '<i></i>' : ''}</span>`;
+  }
+  document.getElementById('calStrip').innerHTML = html;
+  const d = parseDate(selectedDate);
+  document.getElementById('flowDay').textContent = `${d.getMonth() + 1}月${d.getDate()}日`;
+  const flows = allTx().filter(t => t.date === selectedDate);
+  document.getElementById('dayFlow').innerHTML = flows.length ? flows.map(t => flowItemHTML(t, true)).join('') : '<div class="flow-empty">当日暂无流水记录</div>';
+}
+function renderAll() { renderHome(); renderCards(); renderRepayment(); }
+function go(p) {
+  document.querySelectorAll('.page').forEach(x => x.classList.toggle('active', x.dataset.page === p));
+  document.querySelectorAll('.nav-item').forEach((n, i) => n.classList.toggle('active', ['home', 'cards', 'repayment', 'settings'][i] === p));
+  document.getElementById('pageTitle').textContent = titles[p];
+  if (p === 'repayment') renderRepayment();
+  window.scrollTo(0, 0);
+}
+function selDay(ds) { selectedDate = ds; renderRepayment(); }
+function toToday() { selectedDate = todayStr(); renderRepayment(); }
+/* ---------- 弹层通用 ---------- */
+function show() { document.getElementById('mb').classList.add('show'); }
+function closeM() { document.getElementById('mb').classList.remove('show'); }
+function setModal(title, html) { document.getElementById('mTitle').textContent = title; document.getElementById('mBody').innerHTML = html; show(); }
+function val(id) { const e = document.getElementById(id); return e ? e.value.trim() : ''; }
+
+/* ---------- 卡片详情 ---------- */
+function openCard(id) {
+  const c = getCard(id); if (!c) return;
+  const used = cardUsed(c), pct = c.total ? Math.min(100, used / c.total * 100) : 0;
+  const fees = getFees(id), tx = getTx(id).slice(0, 8);
+  const feeState = fees.length ? `${fees.length} 条规则` : '未设置';
+  setModal('卡片详情',
+    `<div class="detail-hero"><span class="bank-mark ${markColor(c.bank)}">${esc(shortName(c.bank))}</span><div><strong>${esc(c.bank || c.name)}</strong><span>${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}${c.user ? ' · ' + esc(c.user) : ''}</span></div></div>` +
+    `<div class="detail-amount">${yuan(used)}</div><div class="detail-caption">当前已用额度</div>` +
+    `<div class="detail-progress"><span style="width:${pct}%"></span></div>` +
+    `<div class="detail-grid"><div class="detail-cell"><span>总额度</span><strong>${yuan(c.total)}</strong></div><div class="detail-cell"><span>可用额度</span><strong>${yuan(c.available)}</strong></div>` +
+    `<div class="detail-cell"><span>固定 / 临时</span><strong>${yuan(c.fixed)} / ${yuan(c.temporary)}</strong></div><div class="detail-cell"><span>账单日</span><strong>${esc(c.billDay || '—')}</strong></div></div>` +
+    `<div class="annual-fee" onclick="openFees(${id})"><span class="af-icon">¥</span><span class="af-body"><span class="af-title">年费 · ${feeState}</span><span class="af-sub">点击查看/管理年费规则 ›</span></span><span class="af-state">${fees.length ? '查看' : '添加'}</span></div>` +
+    `<div class="detail-row"><span>还款日</span><strong>${esc(getEffectiveRepayDay(c))}</strong></div>` +
+    `<div class="detail-row"><span>状态</span><strong>${cardStatus(c)}</strong></div>` +
+    `<div class="flow-head" style="margin-top:16px"><h3>最近流水</h3></div>` +
+    `<div class="flow-list">${tx.length ? tx.map(t => flowItemHTML(t, true)).join('') : '<div class="flow-empty">暂无流水,点下方记一笔</div>'}</div>` +
+    `<div class="flow-cta"><button class="rec" onclick="openRecord(${id})">＋ 记一笔流水</button><button class="edit" onclick="openEdit(${id})">编辑卡片</button></div>`);
+}
+
+/* ---------- 记一笔流水 ---------- */
+function updateSettle() {
+  const on = document.querySelector('.type-seg button.on').dataset.t;
+  const box = document.getElementById('settleBox');
+  if (on !== 'spend') { box.classList.add('hide'); return; }
+  box.classList.remove('hide');
+  const v = parseFloat(val('recAmt')) || 0, fee = v * DEFAULT_FEE_RATE;
+  document.getElementById('recFee').textContent = yuan(+fee.toFixed(2));
+  document.getElementById('recSettle').textContent = yuan(+(v - fee).toFixed(2));
+}
+function openRecord(id) {
+  const c = getCard(id); if (!c) return;
+  setModal('记一笔流水',
+    `<p class="muted" style="margin:-6px 0 10px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')}</p>` +
+    `<div class="type-seg"><button class="on" data-t="spend">消费(支出)</button><button data-t="repayment">还款</button></div>` +
+    `<label class="field-label">金额</label><input id="recAmt" class="big-amount-input" inputmode="decimal" placeholder="0.00" oninput="updateSettle()">` +
+    `<div class="settle-line" id="settleBox"><span>手续费率 0.25% · 手续费 <b id="recFee">¥0</b></span><span>到账 <strong id="recSettle">¥0</strong></span></div>` +
+    `<label class="field-label">日期</label><input id="recDate" class="modal-input" type="date" value="${todayStr()}">` +
+    `<label class="field-label">备注</label><input id="recNote" class="modal-input" placeholder="例如 超市消费">` +
+    `<button class="primary-action" onclick="saveRecord(${id})">保存流水</button>`);
+  document.querySelectorAll('.type-seg button').forEach(b => b.onclick = () => { document.querySelectorAll('.type-seg button').forEach(x => x.classList.remove('on')); b.classList.add('on'); updateSettle(); });
+  updateSettle();
+}
+async function saveRecord(id) {
+  const type = document.querySelector('.type-seg button.on').dataset.t;
+  const amount = parseFloat(val('recAmt')) || 0;
+  if (amount <= 0) { toast('请输入金额'); return; }
+  await addTransaction(id, { type, amount, date: val('recDate') || todayStr(), note: val('recNote') });
+  renderAll(); openCard(id); toast('已记录');
+}
+function confirmDelTx(id) {
+  if (window.confirm('删除这笔流水?额度会自动反算恢复。')) {
+    const tx = all('SELECT cardId FROM transactions WHERE id=?', [id]);
+    const cardId = tx.length ? tx[0].cardId : null;
+    deleteTransaction(id).then(() => { renderAll(); if (cardId && document.getElementById('mb').classList.contains('show')) openCard(cardId); else closeM(); toast('已删除'); });
+  }
+}
+/* ---------- 年费规则 ---------- */
+function openFees(id) {
+  const c = getCard(id); if (!c) return;
+  const fees = getFees(id);
+  const rules = fees.length ? fees.map(f => {
+    const warn = f.status !== 'done' && f.status !== '已减免' && f.status !== '免';
+    return `<div class="af-rule"><span class="af-r-ic">¥</span><span class="af-r-body"><span class="af-r-title">${esc(f.name || '年费')}</span>` +
+      `<span class="af-r-sub">扣费日 ${esc(f.chargeDate || '未设置')} · ${esc(f.requirement || '未设置')}${f.note ? ' · ' + esc(f.note) : ''}</span></span>` +
+      `<span class="af-r-state ${warn ? 'warn' : ''}" onclick="openEditRule(${id},${f.id})">${esc(f.status || 'pending')}</span></div>`;
+  }).join('') : '<div class="flow-empty">该卡未设置年费规则</div>';
+  setModal('年费规则', `<p class="muted" style="margin:-6px 0 12px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')} — 可设多条规则,点状态标签可编辑</p>${rules}<button class="add-rule" onclick="openAddRule(${id})">＋ 新增年费规则</button>`);
+}
+function ruleForm(id, f) {
+  return `<label class="field-label">规则名称</label><input id="fName" class="modal-input" value="${esc(f ? f.name : '年费')}" placeholder="例如 主卡年费">` +
+    `<label class="field-label">扣费日期</label><input id="fDate" class="modal-input" value="${esc(f ? f.chargeDate : '')}" placeholder="MM-DD,例如 12-01 / 未设置">` +
+    `<label class="field-label">减免条件</label><input id="fReq" class="modal-input" value="${esc(f ? f.requirement : '')}" placeholder="例如 年刷满6笔免 / 固定收取">` +
+    `<label class="field-label">状态</label><input id="fStatus" class="modal-input" value="${esc(f ? f.status : 'pending')}" placeholder="pending / 已减免 / 已缴">` +
+    `<label class="field-label">备注</label><input id="fNote" class="modal-input" value="${esc(f ? f.note : '')}" placeholder="选填">`;
+}
+function readRule() { return { name: val('fName'), chargeDate: val('fDate') || '未设置', requirement: val('fReq') || '未设置', status: val('fStatus') || 'pending', note: val('fNote') }; }
+function openAddRule(id) { setModal('新增年费规则', `<p class="muted" style="margin:-6px 0 10px">为该卡新增一条年费规则</p>${ruleForm(id, null)}<button class="primary-action" onclick="saveRule(${id},null)">保存规则</button>`); }
+function openEditRule(id, feeId) {
+  const f = getFees(id).find(x => x.id === feeId);
+  setModal('编辑年费规则', ruleForm(id, f) + `<button class="primary-action" onclick="saveRule(${id},${feeId})">保存修改</button><button class="secondary-action" onclick="removeRule(${id},${feeId})">删除该规则</button>`);
+}
+async function saveRule(id, feeId) { await saveFee(id, feeId, readRule()); openFees(id); toast('已保存'); }
+async function removeRule(id, feeId) { if (window.confirm('删除该年费规则?')) { await deleteFee(id, feeId); openFees(id); toast('已删除'); } }
+
+/* ---------- 流水查询 ---------- */
+function openQuery() {
+  const cs = getCards();
+  setModal('流水查询',
+    `<label class="field-label">选择卡号</label><select id="qCard" class="modal-input" onchange="runQuery()"><option value="">全部卡片</option>${cs.map(c => `<option value="${c.id}">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')}</option>`).join('')}</select>` +
+    `<label class="field-label">日期范围</label><div class="query-bar"><input id="qFrom" class="modal-input" type="date" onchange="runQuery()"><input id="qTo" class="modal-input" type="date" onchange="runQuery()"></div>` +
+    `<div class="query-sum"><div><span>支出合计</span><strong class="out" id="qOut">¥0</strong></div><div><span>还款合计</span><strong class="pay" id="qPay">¥0</strong></div></div>` +
+    `<div class="flow-head"><h3>结果</h3><span class="flow-day" id="qCount">0 笔</span></div><div class="flow-list" id="qList"></div>`);
+  runQuery();
+}
+function runQuery() {
+  const cardSel = val('qCard'), f = val('qFrom'), t = val('qTo');
+  let out = 0, pay = 0;
+  const rows = allTx().filter(x => {
+    if (cardSel && String(x.cardId) !== cardSel) return false;
+    if (f && x.date < f) return false;
+    if (t && x.date > t) return false;
+    return true;
+  });
+  rows.forEach(x => { if (x.type === 'repayment') pay += Number(x.amount); else out += Number(x.amount); });
+  document.getElementById('qOut').textContent = yuan(out);
+  document.getElementById('qPay').textContent = yuan(pay);
+  document.getElementById('qCount').textContent = rows.length + ' 笔';
+  document.getElementById('qList').innerHTML = rows.length ? rows.map(x => flowItemHTML(x, false)).join('') : '<div class="flow-empty">没有匹配的流水</div>';
+}
+
+/* ---------- 排序 ---------- */
+function openSort() {
+  const opts = [['user', '用户拼音'], ['billDay', '账单日'], ['repayDay', '还款日']];
+  setModal('卡片排序', opts.map(([k, label]) => `<button class="sort-row ${k === sortKey ? 'on' : ''}" onclick="setSort('${k}','${label}')">${label}<span class="tick">${k === sortKey ? '✓' : ''}</span></button>`).join(''));
+}
+function setSort(k, label) { sortKey = k; document.getElementById('sortName').textContent = label; renderCards(); closeM(); }
+/* ---------- 卡片增删改 ---------- */
+function cardForm(c) {
+  const billDay = c ? (parseBillDay(c.billDay) || '') : '';
+  const mode = c ? getRepayMode(c.repayDay) : '固定';
+  const repayDate = c ? (parseRepayDate(c.repayDay) || '') : '';
+  return `<label class="field-label">持卡人</label><input id="cUser" class="modal-input" value="${esc(c ? c.user : '')}" placeholder="例如 本人 / 家人">` +
+    `<label class="field-label">发卡银行</label><input id="cBank" class="modal-input" value="${esc(c ? c.bank : '')}" placeholder="例如 招商银行">` +
+    `<label class="field-label">卡种名称</label><input id="cName" class="modal-input" value="${esc(c ? c.name : '')}" placeholder="例如 经典白金卡">` +
+    `<label class="field-label">卡号后四位</label><input id="cTail" class="modal-input" inputmode="numeric" maxlength="4" value="${esc(c ? c.tail : '')}" placeholder="8019">` +
+    `<label class="field-label">固定额度</label><input id="cFixed" class="modal-input" inputmode="decimal" value="${c ? c.fixed : ''}" placeholder="50000">` +
+    `<label class="field-label">临时额度</label><input id="cTemp" class="modal-input" inputmode="decimal" value="${c ? c.temporary : '0'}" placeholder="0">` +
+    (c ? `<label class="field-label">可用额度</label><input id="cAvail" class="modal-input" inputmode="decimal" value="${c.available}">` : '') +
+    `<label class="field-label">账单日(每月几号)</label><input id="cBill" class="modal-input" inputmode="numeric" value="${billDay}" placeholder="1">` +
+    `<label class="field-label">还款方式</label><select id="cMode" class="modal-input"><option ${mode === '固定' ? 'selected' : ''}>固定</option><option ${mode === '顺延' ? 'selected' : ''}>顺延</option></select>` +
+    `<label class="field-label">还款日</label><input id="cRepay" class="modal-input" type="date" value="${repayDate}">`;
+}
+function readCardForm(isEdit) {
+  const billNum = parseInt(val('cBill'), 10);
+  const repay = val('cRepay');
+  const o = {
+    user: val('cUser'), bank: val('cBank'), name: val('cName'), tail: val('cTail'),
+    fixed: Number(val('cFixed') || 0), temporary: Number(val('cTemp') || 0),
+    billDay: billNum ? `每月${billNum}号` : '',
+    repayDay: repay ? `${val('cMode') || '固定'}：${repay}` : ''
+  };
+  if (isEdit) o.available = Number(val('cAvail') || 0);
+  return o;
+}
+function openAdd() { setModal('添加新卡片', cardForm(null) + `<button class="primary-action" onclick="saveNewCard()">保存卡片</button>`); }
+async function saveNewCard() {
+  const o = readCardForm(false);
+  if (!o.bank && !o.name) { toast('请填写银行或卡种'); return; }
+  o.available = o.fixed + o.temporary;
+  const id = await addCard(o); renderAll(); openCard(id); toast('已添加');
+}
+function openEdit(id) {
+  const c = getCard(id); if (!c) return;
+  setModal('修改卡片信息', `<p class="muted" style="margin:-6px 0 10px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')}</p>` + cardForm(c) +
+    `<button class="primary-action" onclick="saveEditCard(${id})">保存修改</button><button class="secondary-action" onclick="confirmDelCard(${id})">删除这张卡片</button>`);
+}
+async function saveEditCard(id) { await updateCard(id, readCardForm(true)); renderAll(); openCard(id); toast('已保存'); }
+function openEditPick() {
+  const cs = getCards();
+  setModal('修改卡片', '<p class="muted" style="margin:-6px 0 10px">选择要修改的卡片。</p>' + (cs.length ? cs.map(c => `<div class="pick-row" onclick="openEdit(${c.id})" style="cursor:pointer"><span class="bank-mark ${markColor(c.bank)}" style="width:32px;height:32px;font-size:11px">${esc(shortName(c.bank))}</span><span><strong style="font-size:13px">${esc(c.bank || c.name)}</strong><br><span class="muted">尾号 ${esc(c.tail || '----')}</span></span><span class="chevron" style="margin-left:auto">›</span></div>`).join('') : '<div class="flow-empty">还没有卡片</div>'));
+}
+function openManage() {
+  const cs = getCards();
+  setModal('删除卡片', '<p class="muted" style="margin:-6px 0 10px">删除后该卡片及其流水、年费将一并移除,操作不可撤销。</p>' + (cs.length ? cs.map(c => `<div class="pick-row"><span class="bank-mark ${markColor(c.bank)}" style="width:32px;height:32px;font-size:11px">${esc(shortName(c.bank))}</span><span><strong style="font-size:13px">${esc(c.bank || c.name)}</strong><br><span class="muted">尾号 ${esc(c.tail || '----')}</span></span><button class="pick-del" onclick="confirmDelCard(${c.id})">删除</button></div>`).join('') : '<div class="flow-empty">还没有卡片</div>'));
+}
+function confirmDelCard(id) {
+  const c = getCard(id); if (!c) return;
+  if (window.confirm(`删除「${c.bank || c.name} 尾号${c.tail}」及其全部流水/年费?`)) {
+    deleteCard(id).then(() => { renderAll(); openManage(); toast('已删除'); });
+  }
+}
+/* ---------- 登录 / 本地密码 ---------- */
+async function sha(s) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''); }
+async function ensureDefaultPass() { if (!localStorage.getItem(PASS_KEY)) localStorage.setItem(PASS_KEY, await sha(DEFAULT_PASS)); }
+async function tryLogin() {
+  const input = document.getElementById('authInput').value;
+  const err = document.getElementById('authErr');
+  if (!input) { err.textContent = '请输入密码'; return; }
+  const ok = (await sha(input)) === localStorage.getItem(PASS_KEY);
+  if (!ok) { err.textContent = '密码不正确'; return; }
+  err.textContent = '';
+  document.getElementById('authInput').value = '';
+  showApp();
+}
+function showApp() {
+  document.getElementById('authScreen').classList.remove('show');
+  document.getElementById('appShell').style.display = '';
+  document.querySelector('.bottom-nav').style.display = '';
+  window.scrollTo(0, 0);
+}
+function lockApp() {
+  closeM();
+  document.getElementById('authScreen').classList.add('show');
+  document.getElementById('appShell').style.display = 'none';
+  document.querySelector('.bottom-nav').style.display = 'none';
+  window.scrollTo(0, 0);
+}
+function openPwd() {
+  setModal('修改密码', `<p class="muted" style="margin:-6px 0 10px">修改打开 App 的本地密码(仅存本机,用于遮挡,非服务器级鉴权)。</p>` +
+    `<label class="field-label">当前密码</label><input id="p0" class="modal-input" type="password" placeholder="输入当前密码">` +
+    `<label class="field-label">新密码</label><input id="p1" class="modal-input" type="password" placeholder="至少 4 位">` +
+    `<label class="field-label">确认新密码</label><input id="p2" class="modal-input" type="password" placeholder="再次输入">` +
+    `<button class="primary-action" onclick="savePwd()">保存新密码</button>`);
+}
+async function savePwd() {
+  const cur = document.getElementById('p0').value, n1 = document.getElementById('p1').value, n2 = document.getElementById('p2').value;
+  if ((await sha(cur)) !== localStorage.getItem(PASS_KEY)) { toast('当前密码不正确'); return; }
+  if (n1.length < 4) { toast('新密码至少 4 位'); return; }
+  if (n1 !== n2) { toast('两次输入不一致'); return; }
+  localStorage.setItem(PASS_KEY, await sha(n1)); closeM(); toast('密码已修改');
+}
+/* ---------- 备份与同步(GitHub 私有仓库) ---------- */
+function ghCfg() { try { return JSON.parse(localStorage.getItem(GH_KEY) || '{}'); } catch (e) { return {}; } }
+function bytesToB64(bytes) { let bin = ''; const chunk = 0x8000; for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)); return btoa(bin); }
+function b64ToBytes(b64) { const bin = atob(b64); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+function updateSyncLabel() {
+  const el = document.getElementById('syncTime'); if (!el) return;
+  const last = localStorage.getItem(SYNC_TIME_KEY);
+  el.textContent = dirty ? '本地有改动 · 待同步' : (last ? '上次同步 ' + last : '未同步');
+}
+function dbSizeText() { try { return Math.round(db.export().byteLength / 1024) + ' KB'; } catch (e) { return '—'; } }
+function openSync() {
+  const cfg = ghCfg();
+  const connected = cfg.user && cfg.repo && cfg.token;
+  const info = connected ? `${esc(cfg.user)} / ${esc(cfg.repo)}` : '尚未配置备份仓库';
+  setModal('备份与同步',
+    `<p class="muted" style="margin:-6px 0 12px">把本地 SQLite 数据库(.db)备份到你的 GitHub 私有仓库。换手机时点「从云端恢复」即可拉回数据。</p>` +
+    `<div class="af-rule"><span class="af-r-ic" style="background:var(--green-soft);color:var(--green)">☁</span><span class="af-r-body"><span class="af-r-title">${info}</span><span class="af-r-sub" id="syncState">${connected ? '已连接 · 数据库 ' + dbSizeText() : '请先在「备份设置」填写仓库和令牌'}</span></span><span class="af-r-state">${connected ? '私有' : '未配置'}</span></div>` +
+    (connected ? `<button class="primary-action" onclick="doSync()">立即备份并同步</button><button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doPull()">从云端恢复</button>` : `<button class="primary-action" onclick="openBackupCfg()">去配置备份</button>`) +
+    `<p class="auth-note" style="color:var(--muted);margin-top:16px">iOS 网页无法真正后台运行,采用点击即备份。令牌只保存在本机,不上传、不进网页代码。</p>`);
+}
+async function ghRequest(cfg, method, extra) {
+  const url = `https://api.github.com/repos/${cfg.user}/${cfg.repo}/contents/ledger.db`;
+  const opt = { method, headers: { Authorization: 'Bearer ' + cfg.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } };
+  if (extra) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(extra); }
+  return fetch(url, opt);
+}
+async function doSync() {
+  const cfg = ghCfg(); const st = document.getElementById('syncState');
+  if (st) st.textContent = '同步中…';
+  try {
+    let sha;
+    const head = await ghRequest(cfg, 'GET');
+    if (head.ok) { const j = await head.json(); sha = j.sha; }
+    const body = { message: '备份账务数据 ' + nowStamp(), content: bytesToB64(db.export()) };
+    if (sha) body.sha = sha;
+    const r = await ghRequest(cfg, 'PUT', body);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const t = nowStamp(); localStorage.setItem(SYNC_TIME_KEY, t); dirty = false; updateSyncLabel();
+    if (st) st.textContent = '已同步 ✓ · ' + t + ' · ' + dbSizeText();
+    toast('已备份到 GitHub');
+  } catch (e) {
+    if (st) st.textContent = '同步失败:' + e.message + '(检查令牌/仓库/网络)';
+    toast('同步失败');
+  }
+}
+async function doPull() {
+  if (!window.confirm('从云端拉取会覆盖本机当前数据,确定?')) return;
+  const cfg = ghCfg(); const st = document.getElementById('syncState');
+  if (st) st.textContent = '恢复中…';
+  try {
+    const r = await ghRequest(cfg, 'GET');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const bytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
+    loadBytesIntoDb(bytes);
+    await persistNow(); dirty = false; updateSyncLabel(); renderAll();
+    if (st) st.textContent = '已从云端恢复 ✓ · ' + dbSizeText();
+    toast('已从云端恢复');
+  } catch (e) { if (st) st.textContent = '恢复失败:' + e.message; toast('恢复失败'); }
+}
+function openBackupCfg() {
+  const cfg = ghCfg();
+  setModal('备份设置',
+    `<p class="muted" style="margin:-6px 0 10px">填一次即可。令牌只保存在本机,不会上传,也不进网页代码。仓库务必设为 <b>Private</b>,以免财务数据公开。</p>` +
+    `<label class="field-label">GitHub 用户名</label><input id="gUser" class="modal-input" value="${esc(cfg.user || 'huangle0714')}">` +
+    `<label class="field-label">私有仓库名</label><input id="gRepo" class="modal-input" value="${esc(cfg.repo || '')}" placeholder="ledger-backup(请设为 Private)">` +
+    `<label class="field-label">访问令牌(Fine-grained,仅该仓库 Contents 读写)</label><input id="gToken" class="modal-input" type="password" value="${esc(cfg.token || '')}" placeholder="github_pat_…">` +
+    `<button class="primary-action" onclick="saveBackupCfg()">保存设置</button>`);
+}
+function saveBackupCfg() {
+  localStorage.setItem(GH_KEY, JSON.stringify({ user: val('gUser'), repo: val('gRepo'), token: document.getElementById('gToken').value.trim() }));
+  updateSyncLabel(); toast('已保存备份设置'); openSync();
+}
+/* ---------- 导出 / 导入 .db ---------- */
+function loadBytesIntoDb(bytes) {
+  const test = new SQL.Database(bytes);
+  const chk = test.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'");
+  if (!chk.length) { test.close(); throw new Error('不是有效的账务数据库(缺少 cards 表)'); }
+  if (db) db.close();
+  db = test;
+}
+function openExport() {
+  setModal('导出备份', `<p class="muted" style="margin:-6px 0 12px">导出一个 .db 文件,可用任意 SQLite 工具打开,或导入到其它设备。</p><button class="primary-action" onclick="doExport()">下载 ledger-${todayStr()}.db</button>`);
+}
+function doExport() {
+  const blob = new Blob([db.export()], { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `ledger-${todayStr()}.db`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('已导出 .db');
+}
+function openImport() {
+  setModal('导入数据', `<p class="muted" style="margin:-6px 0 12px">选择一个 .db 文件导入(会覆盖当前数据)。也可导入 xyk 的 <b>app.db</b> 把已有数据搬过来。</p>` +
+    `<input id="impFile" class="modal-input" type="file" accept=".db,.sqlite,.sqlite3">` +
+    `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doImport()">导入并覆盖</button>`);
+}
+async function doImport() {
+  const f = document.getElementById('impFile').files[0];
+  if (!f) { toast('请选择文件'); return; }
+  try {
+    const buf = await f.arrayBuffer();
+    loadBytesIntoDb(new Uint8Array(buf));
+    await persistNow(); dirty = true; updateSyncLabel(); renderAll(); closeM(); toast('导入成功');
+  } catch (e) { toast('导入失败:' + e.message); }
+}
+
+/* ---------- 启动 ---------- */
+document.getElementById('mb').addEventListener('click', e => { if (e.target.id === 'mb') closeM(); });
+document.getElementById('authInput').addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+
+async function boot() {
+  try {
+    await ensureDefaultPass();
+    await openDatabase();
+    renderAll();
+    updateSyncLabel();
+  } catch (e) {
+    document.getElementById('authErr').textContent = '初始化失败:' + e.message;
+    console.error(e);
+  }
+}
+boot();

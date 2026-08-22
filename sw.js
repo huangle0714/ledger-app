@@ -1,10 +1,13 @@
-const CACHE_NAME = 'ledger-pwa-v5';
+const CACHE_NAME = 'ledger-pwa-v6';
 const APP_FILES = [
   './',
   './index.html',
   './styles.css',
   './pwa-overrides.css',
   './app.js',
+  './seed-data.js',
+  './vendor/sql-wasm.js',
+  './vendor/sql-wasm.wasm',
   './manifest.webmanifest',
   './icon.svg'
 ];
