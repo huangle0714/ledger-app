@@ -551,12 +551,83 @@ function saveBackupCfg() {
   updateSyncLabel(); toast('已保存备份设置'); openSync();
 }
 /* ---------- 导出 / 导入 .db ---------- */
+function dbTables(source) {
+  return allFrom(source, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(r => r.name);
+}
+function allFrom(source, sql, params = []) {
+  const stmt = source.prepare(sql); stmt.bind(params); const out = [];
+  while (stmt.step()) out.push(stmt.getAsObject()); stmt.free(); return out;
+}
+function tableColumns(source, table) {
+  return allFrom(source, `PRAGMA table_info("${String(table).replace(/"/g, '""')}")`).map(r => String(r.name));
+}
+function tableRows(source, table) {
+  return allFrom(source, `SELECT * FROM "${String(table).replace(/"/g, '""')}"`);
+}
+function rowValue(row, names, fallback = '') {
+  const keys = Object.keys(row); const wanted = names.map(String).map(s => s.toLowerCase());
+  const key = keys.find(k => wanted.includes(k.toLowerCase())); return key == null ? fallback : row[key];
+}
+function rowNumber(row, names, fallback = 0) {
+  const n = Number(rowValue(row, names, fallback)); return Number.isFinite(n) ? n : fallback;
+}
+function chooseLegacyTable(source, kind) {
+  const tables = dbTables(source);
+  const scored = tables.map(name => {
+    const lower = name.toLowerCase(); const cols = tableColumns(source, name).map(c => c.toLowerCase()); let score = 0;
+    if (kind === 'card') {
+      if (/card|credit|xyk|信用卡/.test(lower)) score += 5;
+      if (cols.some(c => /bank|issuer|银行/.test(c))) score += 3;
+      if (cols.some(c => /tail|last|card.?no|卡号|尾号/.test(c))) score += 3;
+      if (cols.some(c => /limit|total|额度/.test(c))) score += 2;
+    } else if (kind === 'tx') {
+      if (/transaction|trans|flow|流水|record|消费|还款/.test(lower)) score += 5;
+      if (cols.some(c => /amount|金额|消费|还款/.test(c))) score += 3;
+      if (cols.some(c => /date|日期|时间/.test(c))) score += 2;
+    } else {
+      if (/fee|annual|年费/.test(lower)) score += 5;
+      if (cols.some(c => /fee|年费|免年费/.test(c))) score += 3;
+    }
+    return { name, score };
+  }).sort((a, b) => b.score - a.score);
+  return scored[0]?.score > 0 ? scored[0].name : null;
+}
+function extractLegacyData(source) {
+  const cardTable = chooseLegacyTable(source, 'card');
+  if (!cardTable) throw new Error(`无法识别旧数据库表结构(现有表:${dbTables(source).join(', ') || '无'})`);
+  const cards = [], cardMap = new Map();
+  tableRows(source, cardTable).forEach((row, index) => {
+    const oldId = rowValue(row, ['id', 'cardId', 'card_id', '编号'], index + 1);
+    const id = Number(oldId) || index + 1; cardMap.set(String(oldId), id);
+    const bank = String(rowValue(row, ['bank', 'issuer', 'bankName', '银行', '发卡行'], '未命名银行'));
+    const total = rowNumber(row, ['total', 'creditLimit', 'credit_limit', 'limit', '额度', '总额度']);
+    const available = rowNumber(row, ['available', 'availableAmount', 'available_amount', '可用额度', '余额'], total);
+    cards.push({ id, user: String(rowValue(row, ['user', 'owner', '持卡人'], '')), bank, name: String(rowValue(row, ['name', 'cardName', '卡名'], '')), tail: String(rowValue(row, ['tail', 'last4', 'last_four', 'cardNo', 'card_no', '尾号', '卡号'], '')).slice(-4), total, fixed: rowNumber(row, ['fixed', 'fixedLimit', '固定额度'], total), temporary: rowNumber(row, ['temporary', 'temporaryLimit', '临时额度']), available, billDay: String(rowValue(row, ['billDay', 'bill_day', '账单日'], '')), repayDay: String(rowValue(row, ['repayDay', 'repay_day', '还款日'], '')) });
+  });
+  const annualFees = [], feeTable = chooseLegacyTable(source, 'fee');
+  if (feeTable) tableRows(source, feeTable).forEach((row, index) => annualFees.push({ id: Number(rowValue(row, ['id'], index + 1)) || index + 1, cardId: cardMap.get(String(rowValue(row, ['cardId', 'card_id', 'card', '卡片id'], ''))) || Number(rowValue(row, ['cardId', 'card_id'], 0)), name: String(rowValue(row, ['name', 'feeName', '年费名称'], '年费')), chargeDate: String(rowValue(row, ['chargeDate', 'charge_date', '日期'], '未设置')), requirement: String(rowValue(row, ['requirement', '免年费条件', '条件'], '')), status: String(rowValue(row, ['status', '状态'], 'pending')), note: String(rowValue(row, ['note', '备注'], '')) }));
+  const transactions = [], txTable = chooseLegacyTable(source, 'tx');
+  if (txTable) tableRows(source, txTable).forEach((row, index) => {
+    const oldCard = rowValue(row, ['cardId', 'card_id', 'card', '卡片id'], ''); const cardId = cardMap.get(String(oldCard)) || Number(oldCard);
+    if (!cardId) return;
+    const typeRaw = String(rowValue(row, ['type', 'kind', '类型'], 'spend')).toLowerCase();
+    transactions.push({ id: Number(rowValue(row, ['id'], index + 1)) || index + 1, cardId, date: String(rowValue(row, ['date', 'day', '日期'], todayStr())), time: String(rowValue(row, ['time', '时间'], '')), createdAt: String(rowValue(row, ['createdAt', 'created_at', '创建时间'], '')), amount: rowNumber(row, ['amount', 'money', '金额', '消费金额', '还款金额']), note: String(rowValue(row, ['note', 'remark', '备注'], '')), type: /还款|repay/.test(typeRaw) ? 'repayment' : 'spend', feeRate: rowNumber(row, ['feeRate', 'fee_rate', '手续费率'], DEFAULT_FEE_RATE) });
+  });
+  return { cards, annualFees, transactions };
+}
 function loadBytesIntoDb(bytes) {
-  const test = new SQL.Database(bytes);
-  const chk = test.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'");
-  if (!chk.length) { test.close(); throw new Error('不是有效的账务数据库(缺少 cards 表)'); }
-  if (db) db.close();
-  db = test;
+  const source = new SQL.Database(bytes); let next;
+  try {
+    const columns = dbTables(source).includes('cards') ? tableColumns(source, 'cards').map(c => c.toLowerCase()) : [];
+    if (columns.includes('bank') && columns.includes('total') && columns.includes('available')) {
+      next = source; source = null;
+      next.exec(SCHEMA);
+    } else {
+      const data = extractLegacyData(source); next = new SQL.Database(); next.exec(SCHEMA);
+      const previous = db; db = next; seedFrom(data); db = previous;
+    }
+  } catch (error) { if (next && next !== source) next.close(); throw error; } finally { if (source) source.close(); }
+  if (db) db.close(); db = next; return next;
 }
 function openExport() {
   setModal('导出备份', `<p class="muted" style="margin:-6px 0 12px">导出一个 .db 文件,可用任意 SQLite 工具打开,或导入到其它设备。</p><button class="primary-action" onclick="doExport()">下载 ledger-${todayStr()}.db</button>`);
@@ -570,7 +641,7 @@ function doExport() {
   toast('已导出 .db');
 }
 function openImport() {
-  setModal('导入数据', `<p class="muted" style="margin:-6px 0 12px">选择一个 .db 文件导入(会覆盖当前数据)。也可导入 xyk 的 <b>app.db</b> 把已有数据搬过来。</p>` +
+  setModal('导入数据', `<p class="muted" style="margin:-6px 0 12px">选择一个 .db 文件导入(会覆盖当前数据)。支持当前格式，也会尝试识别 xyk 的 <b>app.db</b> 并转换卡片、年费和流水。</p>` +
     `<input id="impFile" class="modal-input" type="file" accept=".db,.sqlite,.sqlite3">` +
     `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doImport()">导入并覆盖</button>`);
 }
