@@ -1,0 +1,19 @@
+name: LedgerApp
+options:
+  bundleIdPrefix: com.huangle0714
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  LedgerApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios/LedgerApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.huangle0714.ledgerapp
+        INFOPLIST_KEY_CFBundleDisplayName: 账务管家
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+    scheme:
+      gatherCoverageData: false
