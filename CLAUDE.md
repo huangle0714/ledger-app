@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-这是一个面向 iPhone 的本地账务管理 PWA。用户希望长期通过 GitHub Pages 使用，数据不上传服务器，断网时仍能查看、添加和修改记录。下一阶段主要工作是继续调整移动端 UI，并发布到 GitHub Pages。
+这是一个面向 iPhone 的本地账务管理网页。用户决定长期通过 GitHub Pages 使用普通联网网页，不再依赖 Service Worker 离线缓存；数据仍保存在设备本地，不上传账务内容。下一阶段主要工作是继续调整移动端 UI，并发布到 GitHub Pages。
 
 ## 当前地址
 
@@ -49,12 +49,12 @@
 - 修改 HTML 时保持 UTF-8，之前通过网页编辑曾发生中文乱码。
 - 不要用 PowerShell `Get-Content` 的默认编码结果覆盖 UTF-8 文件；读取时显式指定 UTF-8。
 
-## 离线与发布
+## 发布与缓存
 
-- Service Worker 当前采用应用外壳预缓存和导航缓存回退。
-- 每次修改 `index.html`、CSS、JavaScript 或 manifest 后，将 `sw.js` 中缓存名从例如 `ledger-pwa-v5` 升级到新版本。
-- 发布后在线打开正式页面并刷新，等待 Service Worker 安装，再测试飞行模式。
-- iOS 若保留旧缓存，可删除主屏幕图标及对应 Safari 网站数据后重新添加；执行前提醒用户本地数据风险。
+- 当前正式网页不再注册 Service Worker，也不保证断网打开。
+- `index.html` 中保留了一次性清理旧 Service Worker 和 Cache Storage 的代码，发布后在线打开一次即可清理旧缓存。
+- 修改页面后，手机若显示旧版本，使用带查询参数的地址强制刷新，例如 `https://huangle0714.github.io/ledger-app/?v=1adeae9`。
+- 若仍显示旧内容，可清除 Safari 中该网站数据；清除前应先导出本地 JSON/DB 备份。
 
 ## 开发与验证
 
