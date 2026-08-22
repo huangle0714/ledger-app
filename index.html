@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f7fb" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="账务管家" />
+  <title>账务管家</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="phone-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">开发系统管理</p>
+        <h1 id="pageTitle">总览</h1>
+      </div>
+      <button class="avatar" aria-label="打开个人设置" data-action="settings">林</button>
+    </header>
+
+    <section class="page active" data-page="home">
+      <div class="hero-summary">
+        <div class="summary-heading">
+          <span>账户总览</span>
+          <button class="icon-button" aria-label="刷新数据" data-action="refresh">↻</button>
+        </div>
+        <div class="hero-number">¥2,087,742<span class="hero-unit">总额度</span></div>
+        <div class="usage-track"><span style="width:41.1%"></span></div>
+        <div class="usage-meta"><span>已用 ¥858,474.52</span><strong>41.1%</strong></div>
+        <div class="summary-grid">
+          <div><span>固定额度</span><strong>¥2,087,742</strong></div>
+          <div><span>临时额度</span><strong>¥0</strong></div>
+          <div><span>可用额度</span><strong>¥1,229,267.48</strong></div>
+        </div>
+      </div>
+
+      <div class="section-heading"><div><p class="eyebrow">未来 30 天</p><h2>待还款</h2></div><button class="text-button" data-nav="repayment">查看全部</button></div>
+      <button class="repayment-alert" data-nav="repayment">
+        <span class="alert-icon">!</span>
+        <span class="alert-copy"><strong>3 笔账单即将到期</strong><small>最近还款日 · 2026-08-23</small></span>
+        <span class="chevron">›</span>
+      </button>
+
+      <div class="section-heading cards-heading"><div><p class="eyebrow">已绑定账户</p><h2>我的卡片</h2></div><button class="add-button" data-action="add">＋ 添加</button></div>
+      <div class="card-list" id="homeCards"></div>
+    </section>
+
+    <section class="page" data-page="cards">
+      <div class="toolbar"><label class="search-box"><span>⌕</span><input id="searchInput" placeholder="搜索银行、卡号后四位" /></label><button class="filter-button" data-action="filter">筛选</button></div>
+      <div class="filter-row" id="filterRow"><button class="chip selected" data-filter="all">全部 <span>12</span></button><button class="chip" data-filter="urgent">即将还款 <span>3</span></button><button class="chip" data-filter="available">有可用额度</button></div>
+      <div class="cards-count"><span id="cardsCount">12 张卡片</span><span class="muted">按还款日排序</span></div>
+      <div class="card-list" id="allCards"></div>
+    </section>
+
+    <section class="page" data-page="repayment">
+      <div class="repayment-header"><div><p class="eyebrow">2026 年 8 月</p><h2>还款日历</h2></div><button class="month-button">本月⌄</button></div>
+      <div class="calendar-strip"><span><small>周一</small>18</span><span><small>周二</small>19</span><span><small>周三</small>20</span><span class="today"><small>今天</small>21</span><span class="selected-day"><small>周六</small>22</span><span class="due-day"><small>周日</small>23<i></i></span><span><small>周一</small>24</span></div>
+      <div class="section-heading compact"><div><p class="eyebrow">共 3 笔</p><h2>即将到期</h2></div></div>
+      <div class="bill-list" id="billList"></div>
+    </section>
+
+    <section class="page" data-page="settings">
+      <div class="profile-card"><div class="profile-avatar">林</div><div><strong>林先生</strong><span>本地账户 · 已同步</span></div><button aria-label="编辑个人资料">›</button></div>
+      <div class="settings-group"><p class="eyebrow">数据与提醒</p><button class="setting-row"><span class="setting-icon blue">↗</span><span>自动同步账单</span><i class="toggle on"></i></button><button class="setting-row"><span class="setting-icon orange">◷</span><span>还款提醒</span><i class="toggle on"></i></button><button class="setting-row"><span class="setting-icon green">▣</span><span>导出数据</span><b>CSV</b></button></div>
+    </section>
+
+    <nav class="bottom-nav" aria-label="主导航">
+      <button class="nav-item active" data-nav="home"><span>⌂</span><small>总览</small></button>
+      <button class="nav-item" data-nav="cards"><span>▦</span><small>卡片</small></button>
+      <button class="nav-item" data-nav="repayment"><span>✓</span><small>还款</small><i class="nav-dot"></i></button>
+      <button class="nav-item" data-nav="settings"><span>⚙</span><small>设置</small></button>
+    </nav>
+  </main>
+
+  <div class="modal-backdrop" id="modalBackdrop" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-handle"></div><div class="modal-header"><h2 id="modalTitle">卡片详情</h2><button class="close-button" data-action="close">×</button></div><div id="modalBody"></div></div></div>
+  <script src="app.js"></script>
+</body>
+</html>

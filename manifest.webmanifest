@@ -1,0 +1,18 @@
+{
+  "name": "账务管家",
+  "short_name": "账务管家",
+  "description": "本地管理信用卡额度、账单和还款日期",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#f5f7fb",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

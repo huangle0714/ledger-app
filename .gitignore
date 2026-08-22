@@ -1,0 +1,23 @@
+# macOS / Xcode
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+# Signing and local secrets
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+*.p8
+*.key
+.env
+
+# Local preview artifacts
+*.log
