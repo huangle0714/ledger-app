@@ -7,7 +7,9 @@ const DB_KEY = 'sqlite';
 const PASS_KEY = 'ledger-pass';
 const GH_KEY = 'ledger-gh';
 const SYNC_TIME_KEY = 'ledger-sync-time';
+const SYNC_DIRTY_KEY = 'ledger-sync-dirty';
 const DEFAULT_PASS = '85168377';
+const AUTO_SYNC_DELAY = 1800;
 const MARKS = ['blue', 'orange', 'purple', 'teal', 'red'];
 const titles = { home: '总览', cards: '我的卡片', repayment: '还款', settings: '设置' };
 
@@ -15,7 +17,11 @@ let SQL = null;      // sql.js 模块
 let db = null;       // 当前数据库
 let sortKey = 'repayDay';
 let selectedDate = todayStr();
-let dirty = false;   // 本地有未同步改动
+let dirty = localStorage.getItem(SYNC_DIRTY_KEY) === '1'; // 本地有未同步改动
+let autoSyncTimer = null;
+let syncRunning = false;
+let syncAgain = false;
+let changeVersion = 0;
 
 /* ---------- 基础工具 ---------- */
 function pad(n) { return String(n).padStart(2, '0'); }
@@ -86,7 +92,18 @@ async function openDatabase() {
   }
 }
 async function persistNow() { const bytes = db.export(); await idbSet(DB_KEY, bytes); }
-async function persist() { await persistNow(); dirty = true; updateSyncLabel(); }
+function setDirty(value) {
+  dirty = Boolean(value);
+  if (dirty) localStorage.setItem(SYNC_DIRTY_KEY, '1');
+  else localStorage.removeItem(SYNC_DIRTY_KEY);
+  updateSyncLabel();
+}
+async function persist() {
+  await persistNow();
+  changeVersion += 1;
+  setDirty(true);
+  scheduleAutoSync();
+}
 /* ---------- 业务逻辑(忠实移植 xyk) ---------- */
 function getFeeRate(t) { const r = Number(t.feeRate); return Number.isFinite(r) && r >= 0 ? r : DEFAULT_FEE_RATE; }
 function getFeeAmount(t) { return Number(t.amount || 0) * getFeeRate(t); }
@@ -479,6 +496,7 @@ async function savePwd() {
 }
 /* ---------- 备份与同步(GitHub 私有仓库) ---------- */
 function ghCfg() { try { return JSON.parse(localStorage.getItem(GH_KEY) || '{}'); } catch (e) { return {}; } }
+function ghReady(cfg = ghCfg()) { return Boolean(cfg.user && cfg.repo && cfg.token); }
 function bytesToB64(bytes) { let bin = ''; const chunk = 0x8000; for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)); return btoa(bin); }
 function b64ToBytes(b64) { const bin = atob(b64); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
 function updateSyncLabel() {
@@ -501,13 +519,13 @@ function dbSummary() {
 }
 function openSync() {
   const cfg = ghCfg();
-  const connected = cfg.user && cfg.repo && cfg.token;
+  const connected = ghReady(cfg);
   const info = connected ? `${esc(cfg.user)} / ${esc(cfg.repo)}` : '尚未配置备份仓库';
   setModal('备份与同步',
-    `<p class="muted" style="margin:-6px 0 12px">把本地 SQLite 数据库(.db)备份到你的 GitHub 私有仓库。换手机时点「从云端恢复」即可拉回数据。</p>` +
+    `<p class="muted" style="margin:-6px 0 12px">已启用自动同步：打开网页时自动拉取云端数据，新增、修改或删除后自动备份到 GitHub 私有仓库。</p>` +
     `<div class="af-rule"><span class="af-r-ic" style="background:var(--green-soft);color:var(--green)">☁</span><span class="af-r-body"><span class="af-r-title">${info}</span><span class="af-r-sub" id="syncState">${connected ? '已连接 · 数据库 ' + dbSizeText() : '请先在「备份设置」填写仓库和令牌'}</span></span><span class="af-r-state">${connected ? '私有' : '未配置'}</span></div>` +
     (connected ? `<button class="primary-action" onclick="doSync()">立即备份并同步</button><button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doPull()">从云端恢复</button>` : `<button class="primary-action" onclick="openBackupCfg()">去配置备份</button>`) +
-    `<p class="auth-note" style="color:var(--muted);margin-top:16px">iOS 网页无法真正后台运行,采用点击即备份。令牌只保存在本机,不上传、不进网页代码。</p>`);
+    `<p class="auth-note" style="color:var(--muted);margin-top:16px">自动同步只在网页打开且联网时运行。连续修改会合并后同步；多台设备同时编辑时，以最后一次成功同步为准。令牌只保存在本机。</p>`);
 }
 async function ghRequest(cfg, method, extra) {
   const url = `https://api.github.com/repos/${cfg.user}/${cfg.repo}/contents/ledger.db`;
@@ -515,7 +533,17 @@ async function ghRequest(cfg, method, extra) {
   if (extra) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(extra); }
   return fetch(url, opt);
 }
-async function doSync() {
+function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
+  if (!dirty || !ghReady()) return;
+  clearTimeout(autoSyncTimer);
+  autoSyncTimer = setTimeout(() => doSync({ automatic: true }), delay);
+}
+async function doSync(options = {}) {
+  const automatic = Boolean(options.automatic);
+  if (!ghReady()) return false;
+  if (syncRunning) { syncAgain = true; return false; }
+  syncRunning = true;
+  const syncingVersion = changeVersion;
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '同步中…';
   try {
@@ -526,35 +554,68 @@ async function doSync() {
     if (sha) body.sha = sha;
     const r = await ghRequest(cfg, 'PUT', body);
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const t = nowStamp(); localStorage.setItem(SYNC_TIME_KEY, t); dirty = false; updateSyncLabel();
+    const t = nowStamp(); localStorage.setItem(SYNC_TIME_KEY, t);
+    if (changeVersion === syncingVersion) setDirty(false);
+    else { setDirty(true); syncAgain = true; }
     if (st) st.textContent = '已同步 ✓ · ' + t + ' · ' + dbSizeText();
-    toast('已备份到 GitHub');
+    if (!automatic) toast('已备份到 GitHub');
+    return true;
   } catch (e) {
     if (st) st.textContent = '同步失败:' + e.message + '(检查令牌/仓库/网络)';
-    toast('同步失败');
+    if (!automatic) toast('同步失败');
+    return false;
+  } finally {
+    syncRunning = false;
+    if (syncAgain) { syncAgain = false; scheduleAutoSync(500); }
   }
 }
-async function doPull() {
-  if (!window.confirm('从云端拉取会覆盖本机当前数据,确定?')) return;
+async function pullFromCloud(options = {}) {
+  const automatic = Boolean(options.automatic);
+  if (!ghReady()) return false;
+  if (automatic && dirty) return doSync({ automatic: true });
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '恢复中…';
   try {
     const r = await ghRequest(cfg, 'GET');
+    if (automatic && r.status === 404) return false;
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const bytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
+    const localBytes = db.export();
+    const localCounts = dbCounts();
     loadBytesIntoDb(bytes);
     const counts = dbCounts();
-    await persistNow(); dirty = false; updateSyncLabel(); renderAll();
-    if (st) st.textContent = '已从云端恢复 ✓ · ' + dbSizeText() + ' · ' + dbSummary();
-    closeM();
-    go('home');
-    if (counts.cards || counts.transactions || counts.annualFees) {
-      toast(`已恢复 ${counts.cards} 张卡片、${counts.transactions} 条流水`);
-    } else {
-      toast('云端数据库为空,请先在有数据的设备点击立即备份');
+    const remoteEmpty = !counts.cards && !counts.transactions && !counts.annualFees;
+    const localHasData = localCounts.cards || localCounts.transactions || localCounts.annualFees;
+    if (automatic && remoteEmpty && localHasData) {
+      loadBytesIntoDb(localBytes);
+      setDirty(true);
+      scheduleAutoSync(500);
+      return false;
     }
-  } catch (e) { if (st) st.textContent = '恢复失败:' + e.message; toast('恢复失败'); }
+    await persistNow(); setDirty(false); renderAll();
+    if (st) st.textContent = '已从云端恢复 ✓ · ' + dbSizeText() + ' · ' + dbSummary();
+    if (!automatic) { closeM(); go('home'); }
+    if (counts.cards || counts.transactions || counts.annualFees) {
+      if (!automatic) toast(`已恢复 ${counts.cards} 张卡片、${counts.transactions} 条流水`);
+    } else {
+      if (!automatic) toast('云端数据库为空,请先在有数据的设备点击立即备份');
+    }
+    return true;
+  } catch (e) {
+    if (st) st.textContent = '恢复失败:' + e.message;
+    if (!automatic) toast('恢复失败');
+    return false;
+  }
+}
+async function doPull() {
+  if (!window.confirm('从云端拉取会覆盖本机当前数据,确定?')) return;
+  return pullFromCloud({ automatic: false });
+}
+async function syncOnOpen() {
+  if (!ghReady() || !navigator.onLine) return;
+  if (dirty) await doSync({ automatic: true });
+  else await pullFromCloud({ automatic: true });
 }
 function openBackupCfg() {
   const cfg = ghCfg();
@@ -568,6 +629,7 @@ function openBackupCfg() {
 function saveBackupCfg() {
   localStorage.setItem(GH_KEY, JSON.stringify({ user: val('gUser'), repo: val('gRepo'), token: document.getElementById('gToken').value.trim() }));
   updateSyncLabel(); toast('已保存备份设置'); openSync();
+  if (dirty) scheduleAutoSync(500);
 }
 /* ---------- 导出 / 导入 .db ---------- */
 function dbTables(source) {
@@ -670,7 +732,7 @@ async function doImport() {
   try {
     const buf = await f.arrayBuffer();
     loadBytesIntoDb(new Uint8Array(buf));
-    await persistNow(); dirty = true; updateSyncLabel(); renderAll(); closeM(); toast('导入成功');
+    await persistNow(); changeVersion += 1; setDirty(true); scheduleAutoSync(); renderAll(); closeM(); toast('导入成功');
   } catch (e) { toast('导入失败:' + e.message); }
 }
 
@@ -684,10 +746,15 @@ async function boot() {
     await openDatabase();
     renderAll();
     updateSyncLabel();
+    await syncOnOpen();
   } catch (e) {
     document.getElementById('authErr').textContent = '初始化失败:' + e.message;
     console.error(e);
   }
 }
+window.addEventListener('online', () => {
+  if (dirty) scheduleAutoSync(300);
+  else syncOnOpen();
+});
 boot();
 
