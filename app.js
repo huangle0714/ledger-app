@@ -635,7 +635,8 @@ function summarizeDb(source) {
     return {
       ok: true, empty: !cards.length && !txs.length && !afs.length,
       cards: cards.length, transactions: txs.length, annualFees: afs.length,
-      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs })
+      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs }),
+      raw: { cards, txs, afs }
     };
   } catch (e) { return { ok: false }; }
 }
@@ -646,23 +647,71 @@ function conflictRow(label, l, c) {
   return `<div style="padding:7px 0;border-top:1px solid var(--line);color:var(--muted)">${esc(label)}</div>` +
     `<div style="${vs}">${esc(l)}</div><div style="${vs}">${esc(c)}</div>`;
 }
+const CNY = n => '¥' + Number(n || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+const TXTYPE = v => v === 'repayment' ? '还款' : (v === 'expense' ? '消费' : String(v == null ? '' : v));
+function showVal(v, fmt) { if (v == null || v === '') return '(空)'; return fmt ? fmt(v) : String(v); }
+// 逐条对比两组记录,返回差异描述数组
+function diffRecords(localRows, cloudRows, keyOf, labelOf, fields, kindName) {
+  const L = new Map(), C = new Map();
+  localRows.forEach(r => L.set(keyOf(r), r));
+  cloudRows.forEach(r => C.set(keyOf(r), r));
+  const keys = new Set([...L.keys(), ...C.keys()]);
+  const out = [];
+  keys.forEach(k => {
+    const a = L.get(k), b = C.get(k);
+    if (a && !b) out.push({ tag: '本机独有', color: 'var(--blue)', title: kindName + ' ' + labelOf(a), lines: [] });
+    else if (!a && b) out.push({ tag: '云端独有', color: 'var(--orange)', title: kindName + ' ' + labelOf(b), lines: [] });
+    else {
+      const lines = [];
+      fields.forEach(([col, name, fmt]) => {
+        if (String(a[col]) !== String(b[col])) lines.push({ name, a: showVal(a[col], fmt), b: showVal(b[col], fmt) });
+      });
+      if (lines.length) out.push({ tag: '已修改', color: 'var(--red)', title: kindName + ' ' + labelOf(a), lines });
+    }
+  });
+  return out;
+}
+function computeDiffs(L, C) {
+  const cardFields = [['user', '户名'], ['bank', '银行'], ['name', '卡名'], ['tail', '尾号'], ['total', '总额度', CNY], ['fixed', '固定额度', CNY], ['temporary', '临时额度', CNY], ['available', '可用额度', CNY], ['billDay', '账单日'], ['repayDay', '还款日']];
+  const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率']];
+  const afFields = [['name', '名称'], ['chargeDate', '收取日'], ['requirement', '要求'], ['status', '状态'], ['note', '备注']];
+  return [].concat(
+    diffRecords(L.raw.cards, C.raw.cards, r => r.id, c => `#${c.id} ${c.bank || ''}${c.name ? ' ' + c.name : ''}`.trim(), cardFields, '卡片'),
+    diffRecords(L.raw.txs, C.raw.txs, r => r.id, t => `#${t.id} ${t.date || ''} ${TXTYPE(t.type)}`.trim(), txFields, '流水'),
+    diffRecords(L.raw.afs, C.raw.afs, r => r.cardId + ':' + r.id, f => `卡#${f.cardId} 规则#${f.id}`, afFields, '年费')
+  );
+}
+function renderDiffList(diffs) {
+  if (!diffs.length) return `<p class="muted" style="margin:8px 0">计数一致,但数据库内容有细微差别(可能是排序或空值)。</p>`;
+  const cap = 40; const shown = diffs.slice(0, cap);
+  const items = shown.map(d => {
+    const head = `<div style="font-size:12px;font-weight:700"><span style="color:${d.color}">[${d.tag}]</span> ${esc(d.title)}</div>`;
+    const body = d.lines.map(l => `<div style="font-size:11px;color:var(--muted);margin-top:3px">${esc(l.name)}：<span style="color:var(--red)">${esc(l.a)}</span> <span style="color:var(--muted)">→</span> <span style="color:var(--green)">${esc(l.b)}</span></div>`).join('');
+    return `<div style="border-top:1px solid var(--line);padding:9px 0">${head}${body}</div>`;
+  }).join('');
+  const more = diffs.length > cap ? `<p class="muted" style="margin:8px 0 0">仅显示前 ${cap} 处,共 ${diffs.length} 处差异。</p>` : '';
+  return `<div style="margin-top:6px">${items}</div>${more}`;
+}
 function showSyncConflict(L, C, cloudBytes) {
   pendingCloudBytes = cloudBytes;
-  const money = n => '¥' + Number(n || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  const money = CNY;
   const rows =
     conflictRow('卡片', L.cards + ' 张', C.cards + ' 张') +
     conflictRow('流水', L.transactions + ' 条', C.transactions + ' 条') +
     conflictRow('年费记录', L.annualFees + ' 条', C.annualFees + ' 条') +
     conflictRow('可用额度合计', money(L.totalAvail), money(C.totalAvail)) +
     conflictRow('最近流水', L.lastTx || '—', C.lastTx || '—');
+  const diffs = computeDiffs(L, C);
   setModal('数据不一致,请选择',
-    `<p class="muted" style="margin:-6px 0 10px">本机数据与云端(GitHub)不一致。差异项已用红色标出,请选择以哪一份为准:</p>` +
+    `<p class="muted" style="margin:-6px 0 10px">本机数据与云端(GitHub)不一致。下方先是总量对比,再列出逐条差异(<span style="color:var(--red)">红=本机</span> → <span style="color:var(--green)">绿=云端</span>),请选择以哪一份为准:</p>` +
     `<div style="display:grid;grid-template-columns:1.15fr .95fr .95fr;font-size:12px;margin:6px 0 4px">` +
     `<div style="font-weight:700;color:var(--muted);padding:0 0 2px">项目</div>` +
     `<div style="font-weight:700;text-align:right;padding:0 6px 2px">本机</div>` +
     `<div style="font-weight:700;text-align:right;padding:0 6px 2px">云端</div>` +
     rows + `</div>` +
-    `<button class="primary-action" onclick="resolveSyncUseCloud()">用云端数据(覆盖本机)</button>` +
+    `<p class="eyebrow" style="margin:16px 0 2px">逐条差异(本机 → 云端)</p>` +
+    renderDiffList(diffs) +
+    `<button class="primary-action" style="margin-top:16px" onclick="resolveSyncUseCloud()">用云端数据(覆盖本机)</button>` +
     `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="resolveSyncUseLocal()">用本机数据(上传覆盖云端)</button>` +
     `<p class="auth-note" style="color:var(--muted);margin-top:14px">选择后另一份会被覆盖。若想先保留两份,可先在设置里「导出 .db」备份。</p>`);
 }
