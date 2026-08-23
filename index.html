@@ -9,8 +9,8 @@
 <title>开发系统</title>
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="apple-touch-icon" href="./icon.svg" />
-<link rel="stylesheet" href="./styles.css?v=20260823e" />
-<link rel="stylesheet" href="./pwa-overrides.css?v=20260823e" />
+<link rel="stylesheet" href="./styles.css?v=20260823f" />
+<link rel="stylesheet" href="./pwa-overrides.css?v=20260823f" />
 </head>
 <body>
 
@@ -37,13 +37,8 @@
 <div class="usage-meta"><span id="heroUsed">已用 ¥0</span><strong id="heroPct">0%</strong></div>
 <div class="summary-grid"><div><span>固定额度</span><strong id="heroFixed">¥0</strong></div><div><span>临时额度</span><strong id="heroTemp">¥0</strong></div><div><span>可用额度</span><strong id="heroAvail">¥0</strong></div></div>
 </div>
-<div class="section-heading cards-heading"><div><p class="eyebrow">已绑定账户</p><h2>我的卡片</h2></div></div>
+<div class="section-heading cards-heading"><div><p class="eyebrow">已绑定账户</p><h2>我的卡片</h2></div><button class="sort-trigger" onclick="openSort()">排序:<span id="sortName">还款日</span> ⌄</button></div>
 <div class="card-list" id="homeCards"></div>
-</section>
-
-<section class="page" data-page="cards">
-<div class="cards-count"><span id="cardsCount">0 张卡片</span><button class="sort-trigger" onclick="openSort()">排序:<span id="sortName">还款日</span> ⌄</button></div>
-<div class="card-list" id="allCards"></div>
 </section>
 
 <section class="page" data-page="repayment">
@@ -74,7 +69,6 @@
 
 <nav class="bottom-nav">
 <button class="nav-item active" onclick="go('home')"><span>⌂</span><small>总览</small></button>
-<button class="nav-item" onclick="go('cards')"><span>▦</span><small>卡片</small></button>
 <button class="nav-item" onclick="go('repayment')"><span>✓</span><small>还款</small></button>
 <button class="nav-item" onclick="go('settings')"><span>⚙</span><small>设置</small></button>
 </nav>
@@ -127,7 +121,7 @@ if (/(\?|&)diag/.test(location.search)) {
 
 <script src="./vendor/sql-wasm.js"></script>
 <script src="./seed-data.js"></script>
-<script src="./app.js?v=20260823e"></script>
+<script src="./app.js?v=20260823f"></script>
 <script>
 // 已切换为普通联网网页：不再注册 Service Worker，也不依赖离线缓存。
 // 清理手机上旧版本留下的 Service Worker 和 Cache Storage，避免继续显示旧页面。

@@ -207,17 +207,31 @@ async function deleteFee(cardId, feeId) { run('DELETE FROM annual_fees WHERE car
 function feeChip(cardId) { const fs = getFees(cardId); if (!fs.length) return '<span class="fee-chip">无年费规则</span>'; return `<span class="fee-chip">年费 ${fs.length} 条规则</span>`; }
 function cardUsed(c) { return Math.max(0, Number(c.total) - Number(c.available)); }
 function cardStatus(c) { return Number(c.available) >= Number(c.total) ? '已还清' : '待还款'; }
+function cardFeeLines(cardId) {
+  const fs = getFees(cardId);
+  if (!fs.length) return '<span class="fee-none">无年费规则</span>';
+  return fs.map(f => {
+    const warn = f.status !== 'done' && f.status !== '已减免' && f.status !== '免';
+    return `<span class="fee-line"><span class="fi">¥</span>` +
+      `<span class="ft"><b>${esc(f.name || '年费')}</b> · 扣费日 ${esc(f.chargeDate || '未设置')} · ${esc(f.requirement || '未设置')}</span>` +
+      `<span class="fs ${warn ? 'warn' : ''}">${esc(f.status || 'pending')}</span></span>`;
+  }).join('');
+}
 function cardItemHTML(c) {
   const used = cardUsed(c), status = cardStatus(c), mark = markColor(c.bank);
   const due = getEffectiveRepayDate(c.repayDay);
-  return `<button class="card-item" onclick="openCard(${c.id})"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
+  return `<button class="card-item" onclick="openCard(${c.id})">` +
+    `<span class="card-top"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
     `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}</strong>` +
-    `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span>${feeChip(c.id)}</span>` +
-    `<span class="card-right"><strong class="card-amount">已用 ${yuan(used)}</strong>` +
-    `<span class="card-due ${status === '已还清' ? 'ok' : ''}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span></span><span class="chevron">›</span></button>`;
+    `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span></span>` +
+    `<span class="card-right"><strong class="card-avail">可用 ${yuan(c.available)}</strong>` +
+    `<span class="card-amount">已用 ${yuan(used)}</span>` +
+    `<span class="card-due ${status === '已还清' ? 'ok' : ''}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span></span>` +
+    `<span class="chevron">›</span></span>` +
+    `<span class="card-fees">${cardFeeLines(c.id)}</span></button>`;
 }
 function renderHome() {
-  const cs = getCards();
+  const cs = sortedCards();
   const t = cs.reduce((a, c) => { a.total += +c.total; a.fixed += +c.fixed; a.temp += +c.temporary; a.avail += +c.available; return a; }, { total: 0, fixed: 0, temp: 0, avail: 0 });
   const used = Math.max(0, t.total - t.avail), pct = t.total ? Math.min(100, used / t.total * 100) : 0;
   document.getElementById('heroTotal').innerHTML = `${yuan(t.total)}<span class="hero-unit">总额度</span>`;
@@ -230,9 +244,11 @@ function renderHome() {
   document.getElementById('homeCards').innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片,去设置里添加</div>';
 }
 function renderCards() {
+  const el = document.getElementById('allCards');
+  if (!el) return;
   const cs = sortedCards();
-  document.getElementById('cardsCount').textContent = cs.length + ' 张卡片';
-  document.getElementById('allCards').innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片</div>';
+  const cnt = document.getElementById('cardsCount'); if (cnt) cnt.textContent = cs.length + ' 张卡片';
+  el.innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片</div>';
 }
 function flowItemHTML(tx, tap) {
   const card = getCard(tx.cardId) || {};
@@ -270,7 +286,7 @@ function renderRepayment() {
 function renderAll() { renderHome(); renderCards(); renderRepayment(); }
 function go(p) {
   document.querySelectorAll('.page').forEach(x => x.classList.toggle('active', x.dataset.page === p));
-  document.querySelectorAll('.nav-item').forEach((n, i) => n.classList.toggle('active', ['home', 'cards', 'repayment', 'settings'][i] === p));
+  document.querySelectorAll('.nav-item').forEach((n, i) => n.classList.toggle('active', ['home', 'repayment', 'settings'][i] === p));
   document.getElementById('pageTitle').textContent = titles[p];
   if (p === 'repayment') renderRepayment();
   window.scrollTo(0, 0);
@@ -399,7 +415,7 @@ function openSort() {
   const opts = [['user', '用户拼音'], ['billDay', '账单日'], ['repayDay', '还款日']];
   setModal('卡片排序', opts.map(([k, label]) => `<button class="sort-row ${k === sortKey ? 'on' : ''}" onclick="setSort('${k}','${label}')">${label}<span class="tick">${k === sortKey ? '✓' : ''}</span></button>`).join(''));
 }
-function setSort(k, label) { sortKey = k; document.getElementById('sortName').textContent = label; renderCards(); closeM(); }
+function setSort(k, label) { sortKey = k; const s = document.getElementById('sortName'); if (s) s.textContent = label; renderHome(); renderCards(); closeM(); }
 /* ---------- 卡片增删改 ---------- */
 function cardForm(c) {
   const billDay = c ? (parseBillDay(c.billDay) || '') : '';
