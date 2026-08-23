@@ -220,13 +220,15 @@ function cardFeeLines(cardId) {
 function cardItemHTML(c) {
   const used = cardUsed(c), status = cardStatus(c), mark = markColor(c.bank);
   const due = getEffectiveRepayDate(c.repayDay);
-  return `<button class="card-item" onclick="openCard(${c.id})">` +
+  const dueToday = isRepayOn(c, todayStr());
+  return `<button class="card-item ${dueToday ? 'due-today' : ''}" onclick="openCard(${c.id})">` +
     `<span class="card-top"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
-    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}</strong>` +
+    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${dueToday ? '<span class="today-badge">今日还款</span>' : ''}</strong>` +
     `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span></span>` +
     `<span class="card-right"><strong class="card-avail">可用 ${yuan(c.available)}</strong>` +
     `<span class="card-amount">已用 ${yuan(used)}</span>` +
-    `<span class="card-due ${status === '已还清' ? 'ok' : ''}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span></span>` +
+    `<span class="card-due ${dueToday ? 'today' : (status === '已还清' ? 'ok' : '')}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span>` +
+    `${c.billDay ? `<span class="card-bill">账单 ${esc(c.billDay)}</span>` : ''}</span>` +
     `<span class="chevron">›</span></span>` +
     `<span class="card-fees">${cardFeeLines(c.id)}</span></button>`;
 }

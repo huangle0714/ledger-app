@@ -23,8 +23,10 @@ h1,h2,p{margin:0}h1{font-size:28px;letter-spacing:-.02em}h2{font-size:19px;lette
 .card-top{display:flex;align-items:center;gap:12px}
 .bank-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:13px;font-weight:800;color:#fff;flex:0 0 auto}
 .bank-mark.blue{background:#3d76dc}.bank-mark.orange{background:#ed9a3d}.bank-mark.purple{background:#8b67d8}.bank-mark.teal{background:#27a992}.bank-mark.red{background:#dc626c}
-.card-main{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}.card-name{font-size:13px;font-weight:700}.card-sub{font-size:11px;color:var(--muted)}
-.card-right{text-align:right;display:flex;flex-direction:column;gap:3px;min-width:0}.card-avail{font-size:13px;font-weight:700;color:var(--green)}.card-amount{font-size:12px;font-weight:600;color:#54606e}.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}
+.card-main{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}.card-name{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px}.card-sub{font-size:11px;color:var(--muted)}
+.today-badge{font-size:9px;font-weight:800;color:#fff;background:var(--red);border-radius:6px;padding:2px 7px;letter-spacing:.02em}
+.card-right{text-align:right;display:flex;flex-direction:column;gap:3px;min-width:0}.card-avail{font-size:13px;font-weight:700;color:var(--green)}.card-amount{font-size:12px;font-weight:600;color:#54606e}.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}.card-due.today{color:var(--red);font-weight:800}.card-bill{font-size:10px;color:var(--muted)}
+.card-item.due-today{border-color:#f0b3b8;background:#fff6f6;box-shadow:0 4px 14px rgba(223,93,103,.14)}
 .card-fees{margin-top:11px;padding-top:10px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:7px}
 .fee-line{display:flex;align-items:center;gap:8px;min-width:0}
 .fee-line .fi{width:22px;height:22px;border-radius:7px;background:var(--orange-soft);color:var(--orange);display:grid;place-items:center;font-size:11px;font-weight:800;flex:0 0 auto}
