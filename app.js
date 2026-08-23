@@ -528,7 +528,7 @@ function openSync() {
   const connected = ghReady(cfg);
   const info = connected ? `${esc(cfg.user)} / ${esc(cfg.repo)}` : '尚未配置备份仓库';
   setModal('备份与同步',
-    `<p class="muted" style="margin:-6px 0 12px">已启用自动同步：打开网页时自动拉取云端数据，新增、修改或删除后自动备份到 GitHub 私有仓库。</p>` +
+    `<p class="muted" style="margin:-6px 0 12px">已启用自动同步：输入密码进入后自动拉取云端数据并与本机对比，若有差异会让你选择用本机还是云端；新增、修改或删除后自动备份到 GitHub 私有仓库。</p>` +
     `<div class="af-rule"><span class="af-r-ic" style="background:var(--green-soft);color:var(--green)">☁</span><span class="af-r-body"><span class="af-r-title">${info}</span><span class="af-r-sub" id="syncState">${connected ? '已连接 · 数据库 ' + dbSizeText() : '请先在「备份设置」填写仓库和令牌'}</span></span><span class="af-r-state">${connected ? '私有' : '未配置'}</span></div>` +
     (connected ? `<button class="primary-action" onclick="doSync()">立即备份并同步</button><button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doPull()">从云端恢复</button>` : `<button class="primary-action" onclick="openBackupCfg()">去配置备份</button>`) +
     `<p class="auth-note" style="color:var(--muted);margin-top:16px">自动同步只在网页打开且联网时运行。连续修改会合并后同步；多台设备同时编辑时，以最后一次成功同步为准。令牌只保存在本机。</p>`);
@@ -624,12 +624,90 @@ async function doPull() {
   if (!window.confirm('从云端拉取会覆盖本机当前数据,确定?')) return;
   return pullFromCloud({ automatic: false });
 }
+// 汇总某个数据库的关键信息,用于本机/云端对比(canon 用于判断是否完全一致)
+function summarizeDb(source) {
+  try {
+    const cards = allFrom(source, 'SELECT id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay FROM cards ORDER BY id');
+    const txs = allFrom(source, 'SELECT id,cardId,date,time,amount,note,type,feeRate FROM transactions ORDER BY id');
+    const afs = allFrom(source, 'SELECT cardId,id,name,chargeDate,requirement,status,note FROM annual_fees ORDER BY cardId,id');
+    const totalAvail = cards.reduce((s, c) => s + Number(c.available || 0), 0);
+    const lastTx = txs.reduce((m, t) => { const d = String(t.date || ''); return d > m ? d : m; }, '');
+    return {
+      ok: true, empty: !cards.length && !txs.length && !afs.length,
+      cards: cards.length, transactions: txs.length, annualFees: afs.length,
+      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs })
+    };
+  } catch (e) { return { ok: false }; }
+}
+let pendingCloudBytes = null;
+function conflictRow(label, l, c) {
+  const diff = String(l) !== String(c);
+  const vs = 'padding:7px 6px;border-top:1px solid var(--line);text-align:right;' + (diff ? 'color:var(--red);font-weight:700' : 'color:var(--ink)');
+  return `<div style="padding:7px 0;border-top:1px solid var(--line);color:var(--muted)">${esc(label)}</div>` +
+    `<div style="${vs}">${esc(l)}</div><div style="${vs}">${esc(c)}</div>`;
+}
+function showSyncConflict(L, C, cloudBytes) {
+  pendingCloudBytes = cloudBytes;
+  const money = n => '¥' + Number(n || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  const rows =
+    conflictRow('卡片', L.cards + ' 张', C.cards + ' 张') +
+    conflictRow('流水', L.transactions + ' 条', C.transactions + ' 条') +
+    conflictRow('年费记录', L.annualFees + ' 条', C.annualFees + ' 条') +
+    conflictRow('可用额度合计', money(L.totalAvail), money(C.totalAvail)) +
+    conflictRow('最近流水', L.lastTx || '—', C.lastTx || '—');
+  setModal('数据不一致,请选择',
+    `<p class="muted" style="margin:-6px 0 10px">本机数据与云端(GitHub)不一致。差异项已用红色标出,请选择以哪一份为准:</p>` +
+    `<div style="display:grid;grid-template-columns:1.15fr .95fr .95fr;font-size:12px;margin:6px 0 4px">` +
+    `<div style="font-weight:700;color:var(--muted);padding:0 0 2px">项目</div>` +
+    `<div style="font-weight:700;text-align:right;padding:0 6px 2px">本机</div>` +
+    `<div style="font-weight:700;text-align:right;padding:0 6px 2px">云端</div>` +
+    rows + `</div>` +
+    `<button class="primary-action" onclick="resolveSyncUseCloud()">用云端数据(覆盖本机)</button>` +
+    `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="resolveSyncUseLocal()">用本机数据(上传覆盖云端)</button>` +
+    `<p class="auth-note" style="color:var(--muted);margin-top:14px">选择后另一份会被覆盖。若想先保留两份,可先在设置里「导出 .db」备份。</p>`);
+}
+async function resolveSyncUseCloud() {
+  if (!pendingCloudBytes) { closeM(); return; }
+  const bytes = pendingCloudBytes; pendingCloudBytes = null;
+  try {
+    loadBytesIntoDb(bytes); await persistNow(); setDirty(false); renderAll();
+    closeM(); go('home'); toast('已采用云端数据');
+  } catch (e) { toast('载入云端数据失败:' + e.message); }
+}
+async function resolveSyncUseLocal() {
+  pendingCloudBytes = null; closeM();
+  const ok = await doSync({ automatic: true });
+  toast(ok ? '已用本机数据覆盖云端' : '上传失败,请稍后在「备份与同步」重试');
+}
+// 登录后自动同步:拉取云端 → 与本机对比 → 有差异让用户选(用本机 or 用云端)
 async function syncOnOpen() {
   if (!ghReady() || !navigator.onLine) return;
-  // 若本地有未推送的改动且非空,先推上去,避免被随后的拉取覆盖丢失(空库绝不上行)
-  if (dirty && !isDbEmpty()) await doSync({ automatic: true });
-  // 不管本地是否有数据,登录后都以云端为准拉取最新
-  await pullFromCloud({ automatic: true });
+  const cfg = ghCfg();
+  let cloudBytes;
+  try {
+    const r = await ghRequest(cfg, 'GET');
+    if (r.status === 404) {
+      // 云端还没有备份:本机有数据就直接上传建立首份备份
+      if (!isDbEmpty()) { await doSync({ automatic: true }); }
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    cloudBytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
+  } catch (e) { toast('云端同步失败:' + e.message + '(继续用本机数据)'); return; }
+  const local = summarizeDb(db);
+  let cloud; let cdb;
+  try { cdb = new SQL.Database(cloudBytes); cloud = summarizeDb(cdb); } catch (e) { cloud = { ok: false }; }
+  finally { if (cdb) cdb.close(); }
+  if (!cloud.ok) { toast('云端数据无法解析,继续用本机数据'); return; }
+  if (cloud.empty && !local.empty) { toast('云端备份为空,已保留本机数据(将自动上传)'); setDirty(true); scheduleAutoSync(500); return; }
+  if (local.empty) {
+    // 本机无数据:无需询问,直接用云端
+    loadBytesIntoDb(cloudBytes); await persistNow(); setDirty(false); renderAll();
+    if (!cloud.empty) toast('已从云端载入数据'); return;
+  }
+  if (local.canon === cloud.canon) { setDirty(false); return; } // 完全一致,静默
+  showSyncConflict(local, cloud, cloudBytes);                    // 有差异,交给用户决定
 }
 function openBackupCfg() {
   const cfg = ghCfg();
