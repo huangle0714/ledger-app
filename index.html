@@ -9,8 +9,8 @@
 <title>开发系统</title>
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="apple-touch-icon" href="./icon.svg" />
-<link rel="stylesheet" href="./styles.css?v=20260823c" />
-<link rel="stylesheet" href="./pwa-overrides.css?v=20260823c" />
+<link rel="stylesheet" href="./styles.css?v=20260823d" />
+<link rel="stylesheet" href="./pwa-overrides.css?v=20260823d" />
 </head>
 <body>
 
@@ -82,10 +82,52 @@
 
 <div class="modal-backdrop" id="mb"><div class="modal"><div class="modal-handle"></div><div class="modal-header"><h2 id="mTitle">卡片详情</h2><button class="close-button" onclick="closeM()">×</button></div><div id="mBody"></div></div></div>
 <div class="toast" id="toast"></div>
+<script>
+// 右边界溢出诊断:用 https://huangle0714.github.io/ledger-app/?diag=1 打开,
+// 顶部会出现蓝色横幅,显示手机真实视口/缩放数据,并列出真正超出屏幕的元素。
+// 截图这个横幅发我即可精确定位(纯诊断,不带 ?diag 时完全不运行)。
+if (/(\?|&)diag/.test(location.search)) {
+  (function () {
+    function scan() {
+      var vw = window.innerWidth;
+      var vv = window.visualViewport || {};
+      var over = [];
+      var els = document.querySelectorAll('body *');
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i]; var r = el.getBoundingClientRect();
+        if (r.width < 1 && r.height < 1) continue;
+        if (r.right > vw + 0.5 || r.left < -0.5) {
+          over.push(el.tagName.toLowerCase() + '.' + (String(el.className || '').split(' ')[0] || '?') +
+            ' L' + Math.round(r.left) + ' R' + Math.round(r.right) + ' W' + Math.round(r.width));
+          if (over.length >= 8) break;
+        }
+      }
+      var lines = [
+        'innerWidth=' + vw + '  clientW=' + document.documentElement.clientWidth,
+        'docScrollW=' + document.documentElement.scrollWidth + '  bodyScrollW=' + document.body.scrollWidth,
+        'visualVP w=' + Math.round(vv.width || 0) + '  scale=' + (vv.scale || 1).toFixed(3) + '  offL=' + Math.round(vv.offsetLeft || 0),
+        'DPR=' + window.devicePixelRatio + '  screen=' + screen.width + 'x' + screen.height,
+        over.length ? ('超出元素:\n· ' + over.join('\n· ')) : '没有元素超出 innerWidth(说明是缩放/视口问题)'
+      ];
+      document.getElementById('diagBox').textContent = lines.join('\n');
+    }
+    var box = document.createElement('div');
+    box.id = 'diagBox';
+    box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#0b3d91;color:#fff;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-all;padding:8px 10px;max-height:60vh;overflow:auto;box-shadow:0 4px 12px rgba(0,0,0,.4)';
+    box.textContent = '诊断中…';
+    (document.body || document.documentElement).appendChild(box);
+    box.addEventListener('click', scan);
+    scan();
+    setTimeout(scan, 1500);
+    window.addEventListener('resize', scan);
+    if (window.visualViewport) { window.visualViewport.addEventListener('resize', scan); window.visualViewport.addEventListener('scroll', scan); }
+  })();
+}
+</script>
 
 <script src="./vendor/sql-wasm.js"></script>
 <script src="./seed-data.js"></script>
-<script src="./app.js?v=20260823c"></script>
+<script src="./app.js?v=20260823d"></script>
 <script>
 // 已切换为普通联网网页：不再注册 Service Worker，也不依赖离线缓存。
 // 清理手机上旧版本留下的 Service Worker 和 Cache Storage，避免继续显示旧页面。
