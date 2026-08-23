@@ -22,6 +22,7 @@ let autoSyncTimer = null;
 let syncRunning = false;
 let syncAgain = false;
 let changeVersion = 0;
+let unlocked = false; // 是否已通过密码进入(用于登录后再自动拉取)
 
 /* ---------- 基础工具 ---------- */
 function pad(n) { return String(n).padStart(2, '0'); }
@@ -472,9 +473,13 @@ function showApp() {
   document.getElementById('appShell').style.display = '';
   document.querySelector('.bottom-nav').style.display = '';
   window.scrollTo(0, 0);
+  unlocked = true;
+  // 输入密码后:不管本地是否有数据,都自动从 GitHub 拉取最新数据
+  syncOnOpen();
 }
 function lockApp() {
   closeM();
+  unlocked = false;
   document.getElementById('authScreen').classList.add('show');
   document.getElementById('appShell').style.display = 'none';
   document.querySelector('.bottom-nav').style.display = 'none';
@@ -579,8 +584,6 @@ async function doSync(options = {}) {
 async function pullFromCloud(options = {}) {
   const automatic = Boolean(options.automatic);
   if (!ghReady()) return false;
-  // 本地已有改动且有数据时才推送;本地为空则继续走拉取(用于从云端恢复,绝不用空库覆盖)
-  if (automatic && dirty && !isDbEmpty()) return doSync({ automatic: true });
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '恢复中…';
   try {
@@ -623,11 +626,10 @@ async function doPull() {
 }
 async function syncOnOpen() {
   if (!ghReady() || !navigator.onLine) return;
-  // 本地为空 → 永远从云端拉取恢复,绝不把空库推上去(这是"打开有时是空的"的根因防护)
-  if (isDbEmpty()) { await pullFromCloud({ automatic: true }); return; }
-  // 本地有数据:有改动就推送,否则以云端为准拉取
-  if (dirty) await doSync({ automatic: true });
-  else await pullFromCloud({ automatic: true });
+  // 若本地有未推送的改动且非空,先推上去,避免被随后的拉取覆盖丢失(空库绝不上行)
+  if (dirty && !isDbEmpty()) await doSync({ automatic: true });
+  // 不管本地是否有数据,登录后都以云端为准拉取最新
+  await pullFromCloud({ automatic: true });
 }
 function openBackupCfg() {
   const cfg = ghCfg();
@@ -758,13 +760,14 @@ async function boot() {
     await openDatabase();
     renderAll();
     updateSyncLabel();
-    await syncOnOpen();
+    // 拉取放到登录成功后(showApp),确保"输入密码后才自动拉取 GitHub 数据"
   } catch (e) {
     document.getElementById('authErr').textContent = '初始化失败:' + e.message;
     console.error(e);
   }
 }
 window.addEventListener('online', () => {
+  if (!unlocked) return;      // 未登录不联网同步
   if (dirty) scheduleAutoSync(300);
   else syncOnOpen();
 });
