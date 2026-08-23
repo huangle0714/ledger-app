@@ -8,7 +8,8 @@ body{margin:0;width:100%;overflow-x:hidden;background:#e9edf4;color:var(--ink);f
 .eyebrow{margin:0 0 5px;text-transform:uppercase;letter-spacing:.08em;font-size:10px;font-weight:700;color:var(--muted)}
 h1,h2,p{margin:0}h1{font-size:28px;letter-spacing:-.02em}h2{font-size:19px;letter-spacing:-.01em}
 .avatar,.profile-avatar{border:0;background:var(--ink);color:#fff;border-radius:50%;display:grid;place-items:center;font-weight:700}.avatar{width:38px;height:38px;font-size:15px}
-.hero-summary{background:linear-gradient(145deg,#203451,#28466c);border-radius:22px;padding:20px;color:#fff;box-shadow:var(--shadow);margin-bottom:26px}
+.hero-summary{background:linear-gradient(145deg,#203451,#28466c);border-radius:22px;padding:20px;color:#fff;box-shadow:var(--shadow);margin-bottom:26px;overflow:hidden}
+.page{max-width:100%}.card-item,.flow-item,.calendar-strip,.detail-grid{max-width:100%}
 .summary-heading,.usage-meta,.section-heading,.repayment-header,.cards-count,.modal-header,.profile-card,.setting-row{display:flex;align-items:center;justify-content:space-between}
 .summary-heading{font-size:13px;color:#b9c9df}.icon-button{border:0;background:rgba(255,255,255,.12);color:#fff;width:30px;height:30px;border-radius:10px;font-size:19px}
 .hero-number{margin-top:22px;font-size:29px;font-weight:700}.hero-unit{font-size:11px;font-weight:500;color:#b9c9df;margin-left:8px}
@@ -22,7 +23,7 @@ h1,h2,p{margin:0}h1{font-size:28px;letter-spacing:-.02em}h2{font-size:19px;lette
 .bank-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:13px;font-weight:800;color:#fff;flex:0 0 auto}
 .bank-mark.blue{background:#3d76dc}.bank-mark.orange{background:#ed9a3d}.bank-mark.purple{background:#8b67d8}.bank-mark.teal{background:#27a992}.bank-mark.red{background:#dc626c}
 .card-main{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}.card-name{font-size:13px;font-weight:700}.card-sub{font-size:11px;color:var(--muted)}
-.card-right{text-align:right;display:flex;flex-direction:column;gap:4px}.card-amount{font-size:13px;font-weight:700}.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}
+.card-right{text-align:right;display:flex;flex-direction:column;gap:4px;min-width:0}.card-amount{font-size:13px;font-weight:700}.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}
 .chevron{font-size:21px;color:#a8b1bf}
 .page{display:none}.page.active{display:block}
 .repayment-header{margin-bottom:19px}.month-button{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:0 13px;color:var(--ink);font-size:12px;font-weight:600}
