@@ -513,6 +513,7 @@ function dbCounts() {
     return { cards: 0, transactions: 0, annualFees: 0 };
   }
 }
+function isDbEmpty() { const c = dbCounts(); return !c.cards && !c.transactions && !c.annualFees; }
 function dbSummary() {
   const c = dbCounts();
   return `${c.cards} 张卡片、${c.transactions} 条流水、${c.annualFees} 条年费记录`;
@@ -541,6 +542,12 @@ function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
 async function doSync(options = {}) {
   const automatic = Boolean(options.automatic);
   if (!ghReady()) return false;
+  if (isDbEmpty()) {
+    // 关键防护:本地没有任何数据时,绝不把空库推到云端(否则会覆盖/清空云端备份,导致其它设备也变空)
+    if (!automatic) { const st0 = document.getElementById('syncState'); if (st0) st0.textContent = '本地无数据,已跳过备份(避免覆盖云端)'; toast('本地没有数据,已跳过备份以免覆盖云端'); }
+    setDirty(false);
+    return false;
+  }
   if (syncRunning) { syncAgain = true; return false; }
   syncRunning = true;
   const syncingVersion = changeVersion;
@@ -572,12 +579,13 @@ async function doSync(options = {}) {
 async function pullFromCloud(options = {}) {
   const automatic = Boolean(options.automatic);
   if (!ghReady()) return false;
-  if (automatic && dirty) return doSync({ automatic: true });
+  // 本地已有改动且有数据时才推送;本地为空则继续走拉取(用于从云端恢复,绝不用空库覆盖)
+  if (automatic && dirty && !isDbEmpty()) return doSync({ automatic: true });
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '恢复中…';
   try {
     const r = await ghRequest(cfg, 'GET');
-    if (automatic && r.status === 404) return false;
+    if (automatic && r.status === 404) { if (isDbEmpty()) toast('云端还没有备份:请在有数据的设备点「立即备份并同步」'); return false; }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const bytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
@@ -604,7 +612,8 @@ async function pullFromCloud(options = {}) {
     return true;
   } catch (e) {
     if (st) st.textContent = '恢复失败:' + e.message;
-    if (!automatic) toast('恢复失败');
+    // 自动拉取失败时:本地为空才提示(避免每次打开都弹),本地有数据则保留本地、静默
+    if (!automatic || isDbEmpty()) toast('云端同步失败:' + e.message + '(将继续用本机数据)');
     return false;
   }
 }
@@ -614,6 +623,9 @@ async function doPull() {
 }
 async function syncOnOpen() {
   if (!ghReady() || !navigator.onLine) return;
+  // 本地为空 → 永远从云端拉取恢复,绝不把空库推上去(这是"打开有时是空的"的根因防护)
+  if (isDbEmpty()) { await pullFromCloud({ automatic: true }); return; }
+  // 本地有数据:有改动就推送,否则以云端为准拉取
   if (dirty) await doSync({ automatic: true });
   else await pullFromCloud({ automatic: true });
 }
