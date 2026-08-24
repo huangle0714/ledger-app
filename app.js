@@ -23,6 +23,7 @@ let syncRunning = false;
 let syncAgain = false;
 let changeVersion = 0;
 let unlocked = false; // 是否已通过密码进入(用于登录后再自动拉取)
+let lastCatchUp = 0;  // 本次打开自动补记了多少期分期
 
 /* ---------- 基础工具 ---------- */
 function pad(n) { return String(n).padStart(2, '0'); }
@@ -64,7 +65,29 @@ CREATE TABLE IF NOT EXISTS annual_fees(
   PRIMARY KEY(cardId, id));
 CREATE TABLE IF NOT EXISTS transactions(
   id INTEGER PRIMARY KEY, cardId INTEGER, date TEXT, time TEXT, createdAt TEXT,
-  amount REAL NOT NULL DEFAULT 0, note TEXT, type TEXT, feeRate REAL);`;
+  amount REAL NOT NULL DEFAULT 0, note TEXT, type TEXT, feeRate REAL,
+  limitAmount REAL, instId INTEGER, instPeriod INTEGER);
+CREATE TABLE IF NOT EXISTS installments(
+  id INTEGER, cardId INTEGER, name TEXT, principal REAL NOT NULL DEFAULT 0,
+  periods INTEGER NOT NULL DEFAULT 1, postedBase INTEGER NOT NULL DEFAULT 0,
+  perPrincipal REAL, perFee REAL, startDate TEXT,
+  occupyLimit INTEGER NOT NULL DEFAULT 0, status TEXT, note TEXT,
+  PRIMARY KEY(cardId, id));`;
+
+/* 老库升级:全部 CREATE 都带 IF NOT EXISTS,可反复执行;
+   transactions 三列用 PRAGMA 探测后单独补,老备份读进来一样走这里 */
+function tableCols(target, table) {
+  try { const s = target.prepare(`PRAGMA table_info(${table})`); const out = []; while (s.step()) out.push(s.getAsObject().name); s.free(); return out; }
+  catch (e) { return []; }
+}
+function migrate(target) {
+  target.exec(SCHEMA);
+  const cols = tableCols(target, 'transactions');
+  if (!cols.length) return;
+  if (!cols.includes('limitAmount')) target.exec('ALTER TABLE transactions ADD COLUMN limitAmount REAL');
+  if (!cols.includes('instId')) target.exec('ALTER TABLE transactions ADD COLUMN instId INTEGER');
+  if (!cols.includes('instPeriod')) target.exec('ALTER TABLE transactions ADD COLUMN instPeriod INTEGER');
+}
 
 function seedFrom(data) {
   db.exec('BEGIN');
@@ -75,8 +98,13 @@ function seedFrom(data) {
     `INSERT INTO annual_fees(id,cardId,name,chargeDate,requirement,status,note) VALUES(?,?,?,?,?,?,?)`,
     [f.id, f.cardId, f.name, f.chargeDate, f.requirement, f.status, f.note]));
   (data.transactions || []).forEach(t => run(
-    `INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate) VALUES(?,?,?,?,?,?,?,?,?)`,
-    [t.id, t.cardId, t.date, t.time, t.createdAt, Number(t.amount || 0), t.note, t.type, t.type === 'repayment' ? null : Number(t.feeRate != null ? t.feeRate : DEFAULT_FEE_RATE)]));
+    `INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate,limitAmount,instId,instPeriod) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [t.id, t.cardId, t.date, t.time, t.createdAt, Number(t.amount || 0), t.note, t.type, t.type === 'repayment' ? null : Number(t.feeRate != null ? t.feeRate : DEFAULT_FEE_RATE),
+     t.limitAmount != null ? Number(t.limitAmount) : null, t.instId != null ? Number(t.instId) : null, t.instPeriod != null ? Number(t.instPeriod) : null]));
+  (data.installments || []).forEach(n => run(
+    `INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [n.id, n.cardId, n.name, Number(n.principal || 0), Number(n.periods || 1), Number(n.postedBase || 0),
+     Number(n.perPrincipal || 0), Number(n.perFee || 0), n.startDate, n.occupyLimit ? 1 : 0, n.status || 'active', n.note || '']));
   db.exec('COMMIT');
 }
 
@@ -85,9 +113,10 @@ async function openDatabase() {
   const saved = await idbGet(DB_KEY);
   if (saved && saved.byteLength) {
     db = new SQL.Database(new Uint8Array(saved));
+    migrate(db);
   } else {
     db = new SQL.Database();
-    db.exec(SCHEMA);
+    migrate(db);
     if (window.SEED_DATA) seedFrom(window.SEED_DATA);
     await persistNow();
   }
@@ -132,6 +161,9 @@ function getCard(id) { const r = all('SELECT * FROM cards WHERE id=?', [id]); re
 function getFees(cardId) { return all('SELECT * FROM annual_fees WHERE cardId=? ORDER BY id', [cardId]); }
 function getTx(cardId) { return all('SELECT * FROM transactions WHERE cardId=? ORDER BY date DESC, id DESC', [cardId]); }
 function allTx() { return all('SELECT * FROM transactions ORDER BY date DESC, id DESC'); }
+function getInsts(cardId) { return all('SELECT * FROM installments WHERE cardId=? ORDER BY id', [cardId]); }
+function getInst(cardId, id) { const r = all('SELECT * FROM installments WHERE cardId=? AND id=?', [cardId, id]); return r[0] || null; }
+function allInsts() { return all('SELECT * FROM installments ORDER BY cardId, id'); }
 
 function sortedCards() {
   const rows = getCards();
@@ -142,13 +174,20 @@ function sortedCards() {
 }
 
 /* ---------- 额度反算(同 xyk server) ---------- */
+/* 对额度生效的金额:一般等于流水金额;占额度型分期入账时本金早被银行占掉了,
+   这里只扣手续费,所以单独存 limitAmount。null 表示按全额扣。 */
+function txLimitAmount(tx) {
+  if (tx.limitAmount == null || tx.limitAmount === '') return Number(tx.amount || 0);
+  const v = Number(tx.limitAmount);
+  return Number.isFinite(v) ? v : Number(tx.amount || 0);
+}
 function applyToAvailable(available, total, tx) {
-  const amt = Number(tx.amount || 0);
+  const amt = txLimitAmount(tx);
   if (tx.type === 'repayment') return Math.min(total, available + amt);
   return Math.max(0, available - amt);
 }
 function reverseFromAvailable(available, total, tx) {
-  const amt = Number(tx.amount || 0);
+  const amt = txLimitAmount(tx);
   if (tx.type === 'repayment') return Math.max(0, available - amt);
   return Math.min(total, available + amt);
 }
@@ -157,10 +196,13 @@ async function addTransaction(cardId, input) {
   const card = getCard(cardId); if (!card) return;
   const type = input.type === 'repayment' ? 'repayment' : 'spend';
   const feeRate = type === 'repayment' ? null : (Number.isFinite(Number(input.feeRate)) && Number(input.feeRate) >= 0 ? Number(input.feeRate) : DEFAULT_FEE_RATE);
-  const tx = { cardId, date: input.date, time: input.time || nowTime(), createdAt: nowStamp(), amount: Number(input.amount || 0), note: input.note || (type === 'repayment' ? '还款' : '消费'), type, feeRate };
+  const tx = { cardId, date: input.date, time: input.time || nowTime(), createdAt: nowStamp(), amount: Number(input.amount || 0), note: input.note || (type === 'repayment' ? '还款' : '消费'), type, feeRate,
+    limitAmount: input.limitAmount != null ? Number(input.limitAmount) : null,
+    instId: input.instId != null ? Number(input.instId) : null,
+    instPeriod: input.instPeriod != null ? Number(input.instPeriod) : null };
   const id = nextId('transactions');
-  run(`INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate) VALUES(?,?,?,?,?,?,?,?,?)`,
-    [id, tx.cardId, tx.date, tx.time, tx.createdAt, tx.amount, tx.note, tx.type, tx.feeRate]);
+  run(`INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate,limitAmount,instId,instPeriod) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, tx.cardId, tx.date, tx.time, tx.createdAt, tx.amount, tx.note, tx.type, tx.feeRate, tx.limitAmount, tx.instId, tx.instPeriod]);
   const avail = applyToAvailable(Number(card.available), Number(card.total), tx);
   run('UPDATE cards SET available=? WHERE id=?', [avail, cardId]);
   await persist();
@@ -188,6 +230,7 @@ async function updateCard(id, input) {
 async function deleteCard(id) {
   run('DELETE FROM transactions WHERE cardId=?', [id]);
   run('DELETE FROM annual_fees WHERE cardId=?', [id]);
+  run('DELETE FROM installments WHERE cardId=?', [id]);
   run('DELETE FROM cards WHERE id=?', [id]);
   await persist();
 }
@@ -203,6 +246,157 @@ async function saveFee(cardId, feeId, input) {
   await persist();
 }
 async function deleteFee(cardId, feeId) { run('DELETE FROM annual_fees WHERE cardId=? AND id=?', [cardId, feeId]); await persist(); }
+
+/* ---------- 分期 ---------- */
+/* 口径:可用额度永远等于银行 APP 显示的数,分期剩余本金不参与任何加减,只做拆解展示。
+   两种分期只差 occupyLimit 一位:
+     不占额度 — 每期入账扣「本期本金 + 手续费」
+     占用额度 — 本金早被银行占掉了,每期入账只扣手续费 */
+function money2(n) { return Math.round(Number(n || 0) * 100) / 100; }
+
+/* 等本等息真实年化(IRR,监管披露口径),二分法解月利率再 ×12。
+   不入库,每次由本金/期数/每期还款现算,改了金额自动跟着变。 */
+function instAnnualRate(principal, periods, perPay) {
+  principal = Number(principal); periods = Math.round(Number(periods)); perPay = Number(perPay);
+  if (!(principal > 0) || !(periods > 0) || !(perPay > 0)) return null;
+  if (perPay * periods <= principal + 1e-9) return 0;   // 总还款不超过本金 = 免息
+  const npv = r => { let sum = 0, f = 1; for (let t = 0; t < periods; t++) { f *= (1 + r); sum += perPay / f; } return sum - principal; };
+  let lo = 0, hi = 1;
+  while (npv(hi) > 0 && hi < 1e4) hi *= 2;
+  for (let i = 0; i < 200; i++) { const m = (lo + hi) / 2; if (npv(m) > 0) lo = m; else hi = m; }
+  return (lo + hi) / 2 * 12;
+}
+function rateBand(rate) { return rate == null ? '' : (rate <= 1e-9 ? 'free' : rate < 0.08 ? 'low' : rate < 0.15 ? 'mid' : 'high'); }
+function rateChipHTML(rate) {
+  if (rate == null) return '';
+  if (rate <= 1e-9) return '<span class="rate-chip free">免息</span>';
+  return `<span class="rate-chip ${rateBand(rate)}">真实年化 ${(rate * 100).toFixed(2)}%</span>`;
+}
+
+/* 已入账期数取 max(录入时的基线, 已有入账流水的最大期号):
+   删掉最后一期流水会自动回退一期可重新补记,删中间某期不会把期号搞乱。 */
+function instPosted(n) {
+  const periods = Math.max(1, Number(n.periods || 1));
+  const base = Math.min(periods, Math.max(0, Number(n.postedBase || 0)));
+  const top = Number(scalar('SELECT MAX(instPeriod) FROM transactions WHERE cardId=? AND instId=?', [n.cardId, n.id])) || 0;
+  return Math.min(periods, Math.max(base, top));
+}
+/* 第 k 期入账日:从锚点(startDate = 录入时填的下次入账日)一次性加 (k-锚点期号) 个月,
+   逐月累加会在 31 号遇短月后漂移,这样算不会。 */
+function instPeriodDate(n, k) {
+  if (!n.startDate) return null;
+  const anchor = Math.min(Math.max(1, Number(n.periods || 1)), Math.max(0, Number(n.postedBase || 0)) + 1);
+  const d = parseDate(n.startDate);
+  if (isNaN(d.getTime())) return null;
+  return fmtDate(addMonthsClamped(d, k - anchor));
+}
+function instInfo(n) {
+  const periods = Math.max(1, Number(n.periods || 1));
+  const principal = Number(n.principal || 0);
+  const perFee = money2(n.perFee || 0);
+  const perP = Number(n.perPrincipal) > 0 ? money2(n.perPrincipal) : money2(principal / periods);
+  const posted = instPosted(n);
+  const remain = Math.max(0, periods - posted);
+  const closed = n.status === 'closed' || remain <= 0;
+  const paidP = Math.min(principal, money2(perP * posted));
+  const leftP = money2(Math.max(0, principal - paidP));
+  const nextK = posted + 1;
+  const nextDate = closed ? null : instPeriodDate(n, nextK);
+  const perPay = money2(perP + perFee);
+  const rate = instAnnualRate(principal, periods, money2(principal / periods + perFee));
+  return {
+    periods, principal, perFee, perP, perPay, posted, remain, closed, paidP, leftP, nextK, nextDate, rate,
+    feeTotal: money2(perFee * periods),
+    pct: Math.min(100, Math.max(0, posted / periods * 100)),
+    // 末期本金兜掉除不尽的尾差,保证累计本金恰好等于总本金
+    periodPrincipal: k => (k >= periods ? money2(principal - perP * (periods - 1)) : perP)
+  };
+}
+/* 卡片维度汇总:待入账本金 + 占额度型的已占本金 */
+function cardInstSummary(cardId) {
+  const rows = getInsts(cardId);
+  const out = { count: 0, active: 0, pendingP: 0, pendingPay: 0, occupyP: 0, freeP: 0, nextDate: null };
+  rows.forEach(n => {
+    const i = instInfo(n);
+    out.count += 1;
+    if (i.closed) return;
+    out.active += 1;
+    out.pendingP = money2(out.pendingP + i.leftP);
+    out.pendingPay = money2(out.pendingPay + i.perPay);
+    if (n.occupyLimit) out.occupyP = money2(out.occupyP + i.leftP);
+    else out.freeP = money2(out.freeP + i.leftP);
+    if (i.nextDate && (!out.nextDate || i.nextDate < out.nextDate)) out.nextDate = i.nextDate;
+  });
+  return out;
+}
+
+async function saveInst(cardId, instId, input) {
+  const periods = Math.max(1, Math.round(Number(input.periods || 1)));
+  const remaining = Math.min(periods, Math.max(0, Math.round(Number(input.remaining != null ? input.remaining : periods))));
+  const principal = Number(input.principal || 0);
+  const perPrincipal = Number(input.perPrincipal) > 0 ? Number(input.perPrincipal) : money2(principal / periods);
+  const vals = [input.name || '分期', principal, periods, periods - remaining, perPrincipal,
+    Number(input.perFee || 0), input.startDate || '', input.occupyLimit ? 1 : 0, input.status || 'active', input.note || ''];
+  if (instId == null) {
+    const id = (Number(scalar('SELECT MAX(id) FROM installments WHERE cardId=?', [cardId])) || 0) + 1;
+    run(`INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, cardId].concat(vals));
+  } else {
+    run(`UPDATE installments SET name=?,principal=?,periods=?,postedBase=?,perPrincipal=?,perFee=?,startDate=?,occupyLimit=?,status=?,note=? WHERE cardId=? AND id=?`,
+      vals.concat([cardId, instId]));
+  }
+  await persist();
+}
+/* 删分期:入账过的流水一并撤掉,额度回滚,避免留下对不上的孤儿流水 */
+async function deleteInst(cardId, instId) {
+  const txs = all('SELECT * FROM transactions WHERE cardId=? AND instId=?', [cardId, instId]);
+  const card = getCard(cardId);
+  if (card) {
+    let avail = Number(card.available);
+    txs.forEach(tx => { avail = reverseFromAvailable(avail, Number(card.total), tx); });
+    run('UPDATE cards SET available=? WHERE id=?', [avail, cardId]);
+  }
+  run('DELETE FROM transactions WHERE cardId=? AND instId=?', [cardId, instId]);
+  run('DELETE FROM installments WHERE cardId=? AND id=?', [cardId, instId]);
+  await persist();
+}
+async function closeInst(cardId, instId) {
+  run(`UPDATE installments SET status='closed' WHERE cardId=? AND id=?`, [cardId, instId]);
+  await persist();
+}
+async function reopenInst(cardId, instId) {
+  run(`UPDATE installments SET status='active' WHERE cardId=? AND id=?`, [cardId, instId]);
+  await persist();
+}
+
+/* 打开页面时补记:网页没有后台进程,只能在打开时把所有已过入账日的期数一次补齐。
+   按 (cardId, instId, instPeriod) 幂等,重复打开不会重复入账。 */
+async function catchUpInstallments() {
+  const rows = allInsts();
+  if (!rows.length) return 0;
+  const today = todayStr();
+  let done = 0;
+  for (const n of rows) {
+    if (n.status === 'closed') continue;
+    if (!getCard(n.cardId)) continue;
+    for (let guard = 0; guard < 240; guard++) {
+      const i = instInfo(n);
+      if (i.closed || !i.nextDate || i.nextDate > today) break;
+      const k = i.nextK;
+      const dup = Number(scalar('SELECT COUNT(*) FROM transactions WHERE cardId=? AND instId=? AND instPeriod=?', [n.cardId, n.id, k])) || 0;
+      if (dup) break;
+      const pp = i.periodPrincipal(k);
+      await addTransaction(n.cardId, {
+        type: 'spend', date: i.nextDate, time: '00:00', amount: money2(pp + i.perFee),
+        note: `${n.name || '分期'} 第 ${k}/${i.periods} 期`, feeRate: 0,
+        limitAmount: n.occupyLimit ? i.perFee : null,
+        instId: n.id, instPeriod: k
+      });
+      done += 1;
+    }
+  }
+  return done;
+}
 /* ---------- 渲染 ---------- */
 function feeChip(cardId) { const fs = getFees(cardId); if (!fs.length) return '<span class="fee-chip">无年费规则</span>'; return `<span class="fee-chip">年费 ${fs.length} 条规则</span>`; }
 function cardUsed(c) { return Math.max(0, Number(c.total) - Number(c.available)); }
@@ -313,6 +507,8 @@ function openCard(id) {
     `<div class="detail-progress"><span style="width:${pct}%"></span></div>` +
     `<div class="detail-grid"><div class="detail-cell"><span>总额度</span><strong>${yuan(c.total)}</strong></div><div class="detail-cell"><span>可用额度</span><strong>${yuan(c.available)}</strong></div>` +
     `<div class="detail-cell"><span>固定 / 临时</span><strong>${yuan(c.fixed)} / ${yuan(c.temporary)}</strong></div><div class="detail-cell"><span>账单日</span><strong>${esc(c.billDay || '—')}</strong></div></div>` +
+    limitSplitHTML(c) +
+    instEntryHTML(id) +
     `<div class="annual-fee" onclick="openFees(${id})"><span class="af-icon">¥</span><span class="af-body"><span class="af-title">年费 · ${feeState}</span><span class="af-sub">点击查看/管理年费规则 ›</span></span><span class="af-state">${fees.length ? '查看' : '添加'}</span></div>` +
     `<div class="detail-row"><span>还款日</span><strong>${esc(getEffectiveRepayDay(c))}</strong></div>` +
     `<div class="detail-row"><span>状态</span><strong>${cardStatus(c)}</strong></div>` +
@@ -385,6 +581,134 @@ function openEditRule(id, feeId) {
 }
 async function saveRule(id, feeId) { await saveFee(id, feeId, readRule()); openFees(id); toast('已保存'); }
 async function removeRule(id, feeId) { if (window.confirm('删除该年费规则?')) { await deleteFee(id, feeId); openFees(id); toast('已删除'); } }
+
+/* ---------- 分期 UI ---------- */
+/* 卡片详情里的额度拆解:可用额度就是银行 APP 那个数,这里只解释它为什么是这个数 */
+function limitSplitHTML(c) {
+  const sum = cardInstSummary(c.id);
+  if (!sum.active) return '';
+  const lines = [];
+  if (sum.freeP > 0) lines.push(`<div class="ls-line"><span>分期待入账本金 · 不占额度</span><b>${yuan(sum.freeP)}</b></div>`);
+  if (sum.occupyP > 0) lines.push(`<div class="ls-line occupy"><span>分期剩余本金 · 已占额度</span><b>${yuan(sum.occupyP)}</b></div>`);
+  if (sum.nextDate) lines.push(`<div class="ls-line"><span>下次入账 ${esc(sum.nextDate)}</span><b>${yuan(sum.pendingPay)} × ${sum.active} 笔</b></div>`);
+  return `<div class="limit-split">` +
+    `<div class="ls-top"><span class="ls-label">可用额度<span class="ls-bank">与银行 APP 一致</span></span><span class="ls-value">${yuan(c.available)}</span></div>` +
+    lines.join('') + `</div>`;
+}
+function instEntryHTML(id) {
+  const sum = cardInstSummary(id);
+  const state = sum.count ? (sum.active ? `${sum.active} 笔进行中` : `${sum.count} 笔已结清`) : '未设置';
+  const sub = sum.active
+    ? `下次入账 ${esc(sum.nextDate || '未设置')} 共 ${yuan(sum.pendingPay)} · 待入账本金 ${yuan(sum.pendingP)} ›`
+    : '点击添加分期，到入账日自动记账 ›';
+  return `<div class="inst-entry" onclick="openInsts(${id})"><span class="ie-icon">分</span><span class="ie-body"><span class="ie-title">分期 · ${esc(state)}</span><span class="ie-sub">${sub}</span></span><span class="ie-state">${sum.count ? '查看' : '添加'}</span></div>`;
+}
+function instRowHTML(cardId, n) {
+  const i = instInfo(n);
+  const tag = i.closed ? '<span class="inst-tag done">已结清</span>'
+    : (n.occupyLimit ? '<span class="inst-tag occupy">占用额度</span>' : '<span class="inst-tag">不占额度</span>');
+  const sub = i.closed ? `本金 ${yuan(i.principal)} · 共 ${i.periods} 期`
+    : `每期 ${yuan(i.perP)} + 手续费 ${yuan(i.perFee)}`;
+  const foot = i.closed ? `本金 ${yuan(i.principal)} · 累计手续费 ${yuan(i.feeTotal)}`
+    : `下次入账 ${esc(i.nextDate || '未设置')} · 剩余本金 ${yuan(i.leftP)}`;
+  return `<div class="inst-row${i.closed ? ' settled' : ''}" onclick="openEditInst(${cardId},${n.id})">` +
+    `<div class="ir-top"><span class="ir-ic">${i.closed ? '✓' : '分'}</span>` +
+    `<span class="ir-body"><span class="ir-title">${esc(n.name || '分期')} ${Number(i.principal).toLocaleString('zh-CN')}${tag}</span><span class="ir-sub">${sub}</span></span>` +
+    `<span class="ir-amt"><span class="ir-per">${yuan(i.perPay)}</span><span class="ir-left">${i.closed ? '' : '剩 '}${i.remain || i.periods} / ${i.periods} 期</span></span></div>` +
+    `<div class="inst-bar"><span style="width:${i.pct}%"></span></div>` +
+    `<div class="inst-foot"><span>${foot}</span>${rateChipHTML(i.rate)}</div></div>`;
+}
+function openInsts(id) {
+  const c = getCard(id); if (!c) return;
+  const rows = getInsts(id);
+  const list = rows.length ? rows.map(n => instRowHTML(id, n)).join('') : '<div class="flow-empty">该卡未设置分期</div>';
+  setModal('分期',
+    (lastCatchUp ? `<div class="autopost"><span class="ap-ic">✓</span><span class="ap-tx">本次打开自动补记了 ${lastCatchUp} 期分期入账，已从对应卡片的可用额度中扣减。</span></div>` : '') +
+    `<p class="muted" style="margin:-6px 0 12px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')} — 点任意一笔可编辑；到入账日打开网页会自动记账</p>` +
+    list +
+    (rows.length ? `<div class="rate-legend"><em>档位</em><span class="rate-chip free">免息</span><span class="rate-chip low">&lt; 8%</span><span class="rate-chip mid">8 ~ 15%</span><span class="rate-chip high">≥ 15%</span></div>` : '') +
+    `<button class="add-rule" onclick="openAddInst(${id})">＋ 新增分期</button>`);
+}
+/* 表单:边填边算真实年化,金额一改预览就跟着变 */
+function updateInstPreview() {
+  const box = document.getElementById('instPrev'); if (!box) return;
+  const principal = parseFloat(val('iPrincipal')) || 0;
+  const periods = Math.max(1, Math.round(parseFloat(val('iPeriods')) || 0) || 1);
+  const perFee = parseFloat(val('iFee')) || 0;
+  const perP = parseFloat(val('iPerP')) > 0 ? parseFloat(val('iPerP')) : (principal ? money2(principal / periods) : 0);
+  const perPay = money2(perP + perFee);
+  const rate = instAnnualRate(principal, periods, perPay);
+  const monthly = principal > 0 ? perFee / principal : 0;
+  document.getElementById('iPerHint').textContent = perP ? `每期本金 ${yuan(perP)}，每期共还 ${yuan(perPay)}` : '填入总本金和期数后自动计算';
+  box.innerHTML = principal > 0 && perPay > 0
+    ? `<span>月费率 ${(monthly * 100).toFixed(3)}% · 名义年化 ${(monthly * 12 * 100).toFixed(2)}%</span>${rateChipHTML(rate)}`
+    : `<span>填入金额后显示真实年化</span>`;
+}
+function instForm(n) {
+  const occupy = n ? Number(n.occupyLimit) : 0;
+  const i = n ? instInfo(n) : null;
+  return `<div class="type-seg" id="iSeg"><button class="${occupy ? '' : 'on'}" data-o="0">不占额度</button><button class="${occupy ? 'on' : ''}" data-o="1">占用额度</button></div>` +
+    `<p class="muted" style="margin:8px 0 2px;font-size:11px">不占额度：每期扣「本金＋手续费」。占用额度：本金已被银行扣掉，每期只扣手续费。可用额度始终照抄银行 APP。</p>` +
+    `<label class="field-label">分期名称</label><input id="iName" class="modal-input" value="${esc(n ? n.name : '')}" placeholder="例如 消费分期 / 账单分期">` +
+    `<label class="field-label">总本金</label><input id="iPrincipal" class="modal-input" inputmode="decimal" value="${n ? Number(n.principal) : ''}" placeholder="例如 48000" oninput="updateInstPreview()">` +
+    `<label class="field-label">总期数 / 剩余期数</label><div class="query-bar"><input id="iPeriods" class="modal-input" inputmode="numeric" value="${n ? Number(n.periods) : ''}" placeholder="12" oninput="updateInstPreview()"><input id="iRemain" class="modal-input" inputmode="numeric" value="${i ? i.remain : ''}" placeholder="剩余 12"></div>` +
+    `<label class="field-label">每期本金（留空按总本金÷期数）</label><input id="iPerP" class="modal-input" inputmode="decimal" value="${n && Number(n.perPrincipal) ? Number(n.perPrincipal) : ''}" placeholder="自动计算" oninput="updateInstPreview()">` +
+    `<label class="field-label">每期手续费</label><input id="iFee" class="modal-input" inputmode="decimal" value="${n ? Number(n.perFee) : ''}" placeholder="例如 66.53" oninput="updateInstPreview()">` +
+    `<div class="settle-line" id="instPrev"><span>填入金额后显示真实年化</span></div>` +
+    `<p class="muted" id="iPerHint" style="margin:6px 0 0;font-size:11px">填入总本金和期数后自动计算</p>` +
+    `<label class="field-label">下次入账日</label><input id="iStart" class="modal-input" type="date" value="${esc(n ? n.startDate : '')}">` +
+    `<label class="field-label">备注</label><input id="iNote" class="modal-input" value="${esc(n ? n.note : '')}" placeholder="选填">`;
+}
+function bindInstForm() {
+  document.querySelectorAll('#iSeg button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('#iSeg button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+  });
+  updateInstPreview();
+}
+function readInstForm() {
+  const seg = document.querySelector('#iSeg button.on');
+  return {
+    name: val('iName') || '分期', principal: parseFloat(val('iPrincipal')) || 0,
+    periods: parseFloat(val('iPeriods')) || 0, remaining: val('iRemain') === '' ? null : parseFloat(val('iRemain')),
+    perPrincipal: parseFloat(val('iPerP')) || 0, perFee: parseFloat(val('iFee')) || 0,
+    startDate: val('iStart'), occupyLimit: seg ? seg.dataset.o === '1' : false, note: val('iNote')
+  };
+}
+function openAddInst(id) {
+  setModal('新增分期', `<p class="muted" style="margin:-6px 0 10px">填入剩余期数，之后每到入账日打开网页会自动补记</p>${instForm(null)}<button class="primary-action" onclick="saveInstForm(${id},null)">保存分期</button>`);
+  bindInstForm();
+}
+function openEditInst(id, instId) {
+  const n = getInst(id, instId); if (!n) return;
+  const i = instInfo(n);
+  setModal('编辑分期', instForm(n) +
+    `<p class="muted" style="margin:12px 0 0;font-size:11px">已入账 ${i.posted} / ${i.periods} 期。改剩余期数会重设已入账基线，已生成的入账流水不会被删。</p>` +
+    `<button class="primary-action" onclick="saveInstForm(${id},${instId})">保存修改</button>` +
+    (n.status === 'closed'
+      ? `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="reopenInstUI(${id},${instId})">恢复为进行中</button>`
+      : `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="closeInstUI(${id},${instId})">标记已结清（停止入账）</button>`) +
+    `<button class="secondary-action" onclick="removeInst(${id},${instId})">删除该分期</button>`);
+  bindInstForm();
+}
+async function saveInstForm(id, instId) {
+  const input = readInstForm();
+  if (!(input.principal > 0)) { toast('请输入总本金'); return; }
+  if (!(input.periods >= 1)) { toast('请输入总期数'); return; }
+  if (!input.startDate) { toast('请选择下次入账日'); return; }
+  if (input.remaining == null) input.remaining = input.periods;
+  const old = instId != null ? getInst(id, instId) : null;
+  if (old) input.status = old.status;
+  await saveInst(id, instId, input);
+  const n = await catchUpInstallments();   // 若入账日已过,存完立刻补记
+  renderAll(); openInsts(id); toast(n ? `已保存,自动入账 ${n} 期` : '已保存');
+}
+async function removeInst(id, instId) {
+  if (!window.confirm('删除该分期?已自动生成的入账流水会一并撤销,额度自动恢复。')) return;
+  await deleteInst(id, instId); renderAll(); openInsts(id); toast('已删除');
+}
+async function closeInstUI(id, instId) { await closeInst(id, instId); renderAll(); openInsts(id); toast('已标记结清'); }
+async function reopenInstUI(id, instId) { await reopenInst(id, instId); renderAll(); openInsts(id); toast('已恢复'); }
 
 /* ---------- 流水查询 ---------- */
 function openQuery() {
@@ -531,15 +855,15 @@ function dbSizeText() { try { return Math.round(db.export().byteLength / 1024) +
 function dbCounts() {
   try {
     const count = table => Number(scalar(`SELECT COUNT(*) FROM ${table}`)) || 0;
-    return { cards: count('cards'), transactions: count('transactions'), annualFees: count('annual_fees') };
+    return { cards: count('cards'), transactions: count('transactions'), annualFees: count('annual_fees'), installments: count('installments') };
   } catch (e) {
-    return { cards: 0, transactions: 0, annualFees: 0 };
+    return { cards: 0, transactions: 0, annualFees: 0, installments: 0 };
   }
 }
-function isDbEmpty() { const c = dbCounts(); return !c.cards && !c.transactions && !c.annualFees; }
+function isDbEmpty() { const c = dbCounts(); return !c.cards && !c.transactions && !c.annualFees && !c.installments; }
 function dbSummary() {
   const c = dbCounts();
-  return `${c.cards} 张卡片、${c.transactions} 条流水、${c.annualFees} 条年费记录`;
+  return `${c.cards} 张卡片、${c.transactions} 条流水、${c.annualFees} 条年费记录、${c.installments} 条分期`;
 }
 function openSync() {
   const cfg = ghCfg();
@@ -646,15 +970,18 @@ async function doPull() {
 function summarizeDb(source) {
   try {
     const cards = allFrom(source, 'SELECT id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay FROM cards ORDER BY id');
-    const txs = allFrom(source, 'SELECT id,cardId,date,time,amount,note,type,feeRate FROM transactions ORDER BY id');
+    const txs = allFrom(source, 'SELECT id,cardId,date,time,amount,note,type,feeRate,limitAmount,instId,instPeriod FROM transactions ORDER BY id');
     const afs = allFrom(source, 'SELECT cardId,id,name,chargeDate,requirement,status,note FROM annual_fees ORDER BY cardId,id');
+    let insts = [];
+    try { insts = allFrom(source, 'SELECT cardId,id,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note FROM installments ORDER BY cardId,id'); }
+    catch (e) { insts = []; }   // 老备份没有这张表
     const totalAvail = cards.reduce((s, c) => s + Number(c.available || 0), 0);
     const lastTx = txs.reduce((m, t) => { const d = String(t.date || ''); return d > m ? d : m; }, '');
     return {
-      ok: true, empty: !cards.length && !txs.length && !afs.length,
-      cards: cards.length, transactions: txs.length, annualFees: afs.length,
-      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs }),
-      raw: { cards, txs, afs }
+      ok: true, empty: !cards.length && !txs.length && !afs.length && !insts.length,
+      cards: cards.length, transactions: txs.length, annualFees: afs.length, installments: insts.length,
+      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs, insts }),
+      raw: { cards, txs, afs, insts }
     };
   } catch (e) { return { ok: false }; }
 }
@@ -691,12 +1018,14 @@ function diffRecords(localRows, cloudRows, keyOf, labelOf, fields, kindName) {
 }
 function computeDiffs(L, C) {
   const cardFields = [['user', '户名'], ['bank', '银行'], ['name', '卡名'], ['tail', '尾号'], ['total', '总额度', CNY], ['fixed', '固定额度', CNY], ['temporary', '临时额度', CNY], ['available', '可用额度', CNY], ['billDay', '账单日'], ['repayDay', '还款日']];
-  const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率']];
+  const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率'], ['limitAmount', '影响额度金额', CNY], ['instPeriod', '分期期号']];
   const afFields = [['name', '名称'], ['chargeDate', '收取日'], ['requirement', '要求'], ['status', '状态'], ['note', '备注']];
+  const instFields = [['name', '名称'], ['principal', '总本金', CNY], ['periods', '总期数'], ['postedBase', '已入账基线'], ['perPrincipal', '每期本金', CNY], ['perFee', '每期手续费', CNY], ['startDate', '下次入账日'], ['occupyLimit', '占用额度', v => Number(v) ? '是' : '否'], ['status', '状态'], ['note', '备注']];
   return [].concat(
     diffRecords(L.raw.cards, C.raw.cards, r => r.id, c => `#${c.id} ${c.bank || ''}${c.name ? ' ' + c.name : ''}`.trim(), cardFields, '卡片'),
     diffRecords(L.raw.txs, C.raw.txs, r => r.id, t => `#${t.id} ${t.date || ''} ${TXTYPE(t.type)}`.trim(), txFields, '流水'),
-    diffRecords(L.raw.afs, C.raw.afs, r => r.cardId + ':' + r.id, f => `卡#${f.cardId} 规则#${f.id}`, afFields, '年费')
+    diffRecords(L.raw.afs, C.raw.afs, r => r.cardId + ':' + r.id, f => `卡#${f.cardId} 规则#${f.id}`, afFields, '年费'),
+    diffRecords(L.raw.insts || [], C.raw.insts || [], r => r.cardId + ':' + r.id, n => `卡#${n.cardId} ${n.name || '分期'}`, instFields, '分期')
   );
 }
 function renderDiffList(diffs) {
@@ -717,6 +1046,7 @@ function showSyncConflict(L, C, cloudBytes) {
     conflictRow('卡片', L.cards + ' 张', C.cards + ' 张') +
     conflictRow('流水', L.transactions + ' 条', C.transactions + ' 条') +
     conflictRow('年费记录', L.annualFees + ' 条', C.annualFees + ' 条') +
+    conflictRow('分期', (L.installments || 0) + ' 条', (C.installments || 0) + ' 条') +
     conflictRow('可用额度合计', money(L.totalAvail), money(C.totalAvail)) +
     conflictRow('最近流水', L.lastTx || '—', C.lastTx || '—');
   const diffs = computeDiffs(L, C);
@@ -861,7 +1191,7 @@ function loadBytesIntoDb(bytes) {
     const columns = dbTables(source).includes('cards') ? tableColumns(source, 'cards').map(c => c.toLowerCase()) : [];
     if (columns.includes('bank') && columns.includes('total') && columns.includes('available')) {
       next = source; source = null;
-      next.exec(SCHEMA);
+      migrate(next);
     } else {
       const data = extractLegacyData(source); next = new SQL.Database(); next.exec(SCHEMA);
       const previous = db; db = next; seedFrom(data); db = previous;
@@ -903,6 +1233,7 @@ async function boot() {
   try {
     await ensureDefaultPass();
     await openDatabase();
+    lastCatchUp = await catchUpInstallments();   // 网页无后台进程,打开时把已过入账日的期数补齐
     renderAll();
     updateSyncLabel();
     // 拉取放到登录成功后(showApp),确保"输入密码后才自动拉取 GitHub 数据"

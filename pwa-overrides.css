@@ -1,1 +1,56 @@
 /* 旧版补充样式已合并进 styles.css,保留此文件以兼容缓存清单。 */
+
+/* ===== 分期(2026-08-24 新增,与 design-installment.html 同源) ===== */
+
+/* 卡片详情:可用额度拆解。可用额度永远等于银行 APP 显示的数,这里只解释它为什么是这个数 */
+.limit-split{background:#f7f8fa;border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin:-6px 0 15px}
+.limit-split .ls-top{display:flex;align-items:baseline;justify-content:space-between}
+.limit-split .ls-label{font-size:10px;color:var(--muted)}
+.limit-split .ls-value{font-size:19px;font-weight:700;color:var(--green)}
+.limit-split .ls-bank{font-size:9px;color:#a3aebd;margin-left:5px;font-weight:500}
+.limit-split .ls-line{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:9px;border-top:1px dashed var(--line);font-size:11px;color:#6a7686}
+.limit-split .ls-line>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.limit-split .ls-line b{flex:0 0 auto;font-weight:700;color:#4a5566}
+.limit-split .ls-line.occupy b{color:#b07414}
+
+/* 分期入口块(仿年费块,蓝色系) */
+.inst-entry{display:flex;align-items:center;gap:10px;background:var(--blue-soft);border:1px solid #cfdefb;border-radius:14px;padding:12px 13px;margin:4px 0 8px;cursor:pointer}
+.inst-entry .ie-icon{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;background:#fff;color:var(--blue);font-size:14px;font-weight:800;flex:0 0 auto}
+.inst-entry .ie-body{flex:1;display:flex;flex-direction:column;gap:3px;min-width:0}
+.inst-entry .ie-title{font-size:12px;font-weight:700;color:#2c5bb5}
+.inst-entry .ie-sub{font-size:10px;color:#5c7dbd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inst-entry .ie-state{flex:0 0 auto;font-size:10px;font-weight:700;padding:4px 8px;border-radius:8px;background:#fff;color:var(--blue)}
+
+/* 分期条目 */
+.inst-row{background:#f7f8fa;border:1px solid var(--line);border-radius:13px;padding:11px 12px;margin-bottom:9px;cursor:pointer}
+.inst-row .ir-top{display:flex;align-items:flex-start;gap:10px}
+.inst-row .ir-ic{width:30px;height:30px;border-radius:9px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center;font-size:13px;font-weight:800;flex:0 0 auto}
+.inst-row .ir-body{flex:1;min-width:0}
+.inst-row .ir-title{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.inst-row .ir-sub{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.6}
+.inst-row .ir-amt{flex:0 0 auto;text-align:right}
+.inst-row .ir-per{display:block;font-size:13px;font-weight:700;color:#54606e;white-space:nowrap}
+.inst-row .ir-left{display:block;font-size:9px;color:var(--muted);margin-top:2px;white-space:nowrap}
+.inst-tag{font-size:9px;font-weight:800;border-radius:6px;padding:2px 6px;white-space:nowrap;background:var(--green-soft);color:var(--green)}
+.inst-tag.occupy{background:#fdecc8;color:#b07414}
+.inst-tag.done{background:#eef1f5;color:#8b96a5}
+.inst-bar{height:5px;background:#e7ebf1;border-radius:6px;margin-top:9px;overflow:hidden}
+.inst-bar span{display:block;height:100%;background:var(--blue);border-radius:6px}
+.inst-row.settled{opacity:.62}
+.inst-row.settled .ir-ic{background:#eef1f5;color:#8b96a5}
+.inst-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:9px;color:#a3aebd;margin-top:7px}
+.inst-foot>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 年化利率 chip:按真实年化(IRR)分档配色 0=免息蓝 <8%绿 8~15%橙 >=15%红 */
+.rate-chip{flex:0 0 auto;font-size:10px;font-weight:800;border-radius:7px;padding:3px 8px;white-space:nowrap}
+.rate-chip.free{background:var(--blue-soft);color:var(--blue)}
+.rate-chip.low{background:var(--green-soft);color:var(--green)}
+.rate-chip.mid{background:#fdecc8;color:#b07414}
+.rate-chip.high{background:var(--red-soft);color:var(--red)}
+.rate-legend{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:10px 2px 0}
+.rate-legend em{font-style:normal;font-size:10px;color:#93a0b2;margin-right:2px}
+
+/* 自动补记提示条 */
+.autopost{display:flex;align-items:flex-start;gap:9px;background:var(--green-soft);border:1px solid #bfe8d7;border-radius:12px;padding:10px 12px;margin:0 0 12px}
+.autopost .ap-ic{width:22px;height:22px;border-radius:7px;background:#fff;color:var(--green);display:grid;place-items:center;font-size:12px;font-weight:800;flex:0 0 auto}
+.autopost .ap-tx{font-size:11px;color:#1f7a5a;line-height:1.65}

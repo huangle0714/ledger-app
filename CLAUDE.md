@@ -16,8 +16,8 @@
 
 - `index.html`：PWA 页面结构和 Service Worker 注册。
 - `styles.css`：主要移动端样式。
-- `pwa-overrides.css`：新增、编辑和删除卡片控件的补充样式。
-- `app.js`：卡片列表、统计、筛选、弹窗、本地保存及 JSON 导入导出。
+- `pwa-overrides.css`：新增、编辑和删除卡片控件，以及分期模块的补充样式。
+- `app.js`：卡片列表、统计、筛选、弹窗、分期、本地保存及 JSON 导入导出。
 - `sw.js`：离线缓存，修改静态资源后必须递增 `CACHE_NAME`。
 - `manifest.webmanifest`：PWA 名称、启动方式和图标。
 - `server.js`、`启动账务管家.cmd`：Windows 局域网预览工具。
@@ -25,11 +25,23 @@
 
 ## 数据规则
 
-- 卡片数据保存在浏览器 `localStorage`，同时尝试写入 `IndexedDB`。
+- 业务数据用 sql.js（浏览器内 SQLite）保存，整个数据库二进制写入 `IndexedDB`（键名 `sqlite`）。
+- `localStorage` 只存口令哈希、GitHub 备份配置和同步标记，不存账务数据。
+- 表结构：`cards`、`transactions`、`annual_fees`、`installments`。
 - GitHub Pages 只托管静态文件，不保存用户账务数据。
 - 不要加入远程数据库、登录、统计 SDK 或网络同步，除非用户明确要求。
 - 清除 Safari 网站数据、删除 PWA 或换手机可能丢失数据，应保留 JSON 导入导出功能。
 - 改数据结构时必须兼容已有本地数据，不能无提示重置。
+
+## 分期机制（2026-08-24 落地）
+
+- 两种分期只差 `installments.occupyLimit` 一位：不占额度型每期扣「本金＋手续费」，占用额度型本金早被银行扣掉，每期只扣手续费。
+- 每期入账金额记在 `transactions.amount`，真正影响可用额度的金额记在 `transactions.limitAmount`（为空表示按全额扣）。
+- `available` 永远等于银行 APP 显示值，分期剩余本金不参与任何加减，只在卡片详情里做拆解展示。
+- 网页没有后台进程，`catchUpInstallments()` 在打开页面时把所有已过入账日的期数一次补齐，按 `(cardId, instId, instPeriod)` 幂等，重复打开不会重复入账。
+- 已入账期数是派生量 `max(postedBase, MAX(instPeriod))`，不落库；删掉最后一期会自动回退一期可重新补记。
+- 年化利率用 IRR 二分法每次现算，不入库。不要手算，等本等息真实年化约为名义值的 `2n/(n+1)` 倍。
+- `installments` 表和 `transactions` 的三个新列由 `migrate()` 用 `PRAGMA table_info` 探测后补齐，老库和老备份都能直接升级。
 
 ## 用户确认的交互方向
 
