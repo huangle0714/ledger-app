@@ -54,3 +54,12 @@
 .autopost{display:flex;align-items:flex-start;gap:9px;background:var(--green-soft);border:1px solid #bfe8d7;border-radius:12px;padding:10px 12px;margin:0 0 12px}
 .autopost .ap-ic{width:22px;height:22px;border-radius:7px;background:#fff;color:var(--green);display:grid;place-items:center;font-size:12px;font-weight:800;flex:0 0 auto}
 .autopost .ap-tx{font-size:11px;color:#1f7a5a;line-height:1.65}
+
+/* 我的卡片列表:年费行下方的分期摘要行。与 .fee-line 同构,配色换成蓝色以区分年费的橙色。
+   第一行给笔数与期数,第二行拆出本金与手续费,右侧是两者合计。两行都留 ellipsis 兜底。 */
+.inst-line{display:flex;align-items:center;gap:8px;min-width:0}
+.inst-line .ii{width:22px;height:22px;border-radius:7px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center;font-size:11px;font-weight:800;flex:0 0 auto}
+.inst-line .it{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.inst-line .it-1{font-size:11px;font-weight:700;color:#4a5566;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inst-line .it-2{font-size:10px;color:#6a7686;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inst-line .is{flex:0 0 auto;font-size:11px;font-weight:800;color:var(--blue);white-space:nowrap}

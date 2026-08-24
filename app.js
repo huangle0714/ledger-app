@@ -315,13 +315,16 @@ function instInfo(n) {
 /* 卡片维度汇总:待入账本金 + 占额度型的已占本金 */
 function cardInstSummary(cardId) {
   const rows = getInsts(cardId);
-  const out = { count: 0, active: 0, pendingP: 0, pendingPay: 0, occupyP: 0, freeP: 0, nextDate: null };
+  const out = { count: 0, active: 0, pendingP: 0, pendingFee: 0, pendingPay: 0, occupyP: 0, freeP: 0, maxRemain: 0, nextDate: null };
   rows.forEach(n => {
     const i = instInfo(n);
     out.count += 1;
     if (i.closed) return;
     out.active += 1;
     out.pendingP = money2(out.pendingP + i.leftP);
+    /* 剩余手续费 = 每期手续费 x 剩余期数,和剩余本金分开显示,免得混成一个数看不出构成 */
+    out.pendingFee = money2(out.pendingFee + i.perFee * i.remain);
+    out.maxRemain = Math.max(out.maxRemain, i.remain);
     out.pendingPay = money2(out.pendingPay + i.perPay);
     if (n.occupyLimit) out.occupyP = money2(out.occupyP + i.leftP);
     else out.freeP = money2(out.freeP + i.leftP);
@@ -411,6 +414,19 @@ function cardFeeLines(cardId) {
       `<span class="fs ${warn ? 'warn' : ''}">${esc(f.status || 'pending')}</span></span>`;
   }).join('');
 }
+/* 我的卡片列表:年费行下面的分期摘要。没有进行中的分期就整行不输出(自动隐藏);
+   已结清的分期不计入,因为它对"还欠多少"没有意义。 */
+function cardInstLine(cardId) {
+  const s = cardInstSummary(cardId);
+  if (!s.active) return '';
+  const left = money2(s.pendingP + s.pendingFee);
+  /* 多笔分期期数往往不一致,一笔时说"剩余",多笔时说"最长",避免把最大值误读成全部 */
+  const term = s.active > 1 ? `最长 ${s.maxRemain} 期` : `剩余 ${s.maxRemain} 期`;
+  return `<span class="inst-line"><span class="ii">分</span>` +
+    `<span class="it"><span class="it-1">分期 ${s.active} 笔 · ${term}</span>` +
+    `<span class="it-2">本金 ${yuan(s.pendingP)}${s.pendingFee > 0 ? ` ＋ 手续费 ${yuan(s.pendingFee)}` : ' · 免手续费'}</span></span>` +
+    `<span class="is">${yuan(left)}</span></span>`;
+}
 function cardItemHTML(c) {
   const used = cardUsed(c), status = cardStatus(c), mark = markColor(c.bank);
   const due = getEffectiveRepayDate(c.repayDay);
@@ -424,7 +440,7 @@ function cardItemHTML(c) {
     `<span class="card-due ${dueToday ? 'today' : (status === '已还清' ? 'ok' : '')}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span>` +
     `${c.billDay ? `<span class="card-bill">账单 ${esc(c.billDay)}</span>` : ''}</span>` +
     `<span class="chevron">›</span></span>` +
-    `<span class="card-fees">${cardFeeLines(c.id)}</span></button>`;
+    `<span class="card-fees">${cardFeeLines(c.id)}${cardInstLine(c.id)}</span></button>`;
 }
 function renderHome() {
   const cs = sortedCards();
