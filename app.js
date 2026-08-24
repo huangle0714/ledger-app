@@ -72,21 +72,26 @@ CREATE TABLE IF NOT EXISTS installments(
   periods INTEGER NOT NULL DEFAULT 1, postedBase INTEGER NOT NULL DEFAULT 0,
   perPrincipal REAL, perFee REAL, startDate TEXT,
   occupyLimit INTEGER NOT NULL DEFAULT 0, status TEXT, note TEXT,
+  feeMode TEXT, monthRate REAL,
   PRIMARY KEY(cardId, id));`;
 
 /* 老库升级:全部 CREATE 都带 IF NOT EXISTS,可反复执行;
-   transactions 三列用 PRAGMA 探测后单独补,老备份读进来一样走这里 */
+   后加的列用 PRAGMA 探测后单独补,老备份读进来一样走这里。
+   注意每张表各自判空,不能因为一张表探测不到就整体 return(会漏掉后面的表) */
 function tableCols(target, table) {
   try { const s = target.prepare(`PRAGMA table_info(${table})`); const out = []; while (s.step()) out.push(s.getAsObject().name); s.free(); return out; }
   catch (e) { return []; }
 }
+function addCols(target, table, defs) {
+  const cols = tableCols(target, table);
+  if (!cols.length) return;
+  defs.forEach(([name, type]) => { if (!cols.includes(name)) target.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`); });
+}
 function migrate(target) {
   target.exec(SCHEMA);
-  const cols = tableCols(target, 'transactions');
-  if (!cols.length) return;
-  if (!cols.includes('limitAmount')) target.exec('ALTER TABLE transactions ADD COLUMN limitAmount REAL');
-  if (!cols.includes('instId')) target.exec('ALTER TABLE transactions ADD COLUMN instId INTEGER');
-  if (!cols.includes('instPeriod')) target.exec('ALTER TABLE transactions ADD COLUMN instPeriod INTEGER');
+  addCols(target, 'transactions', [['limitAmount', 'REAL'], ['instId', 'INTEGER'], ['instPeriod', 'INTEGER']]);
+  /* feeMode 空 = flat(等本等息),老数据行为一个数都不变 */
+  addCols(target, 'installments', [['feeMode', 'TEXT'], ['monthRate', 'REAL']]);
 }
 
 function seedFrom(data) {
@@ -102,9 +107,10 @@ function seedFrom(data) {
     [t.id, t.cardId, t.date, t.time, t.createdAt, Number(t.amount || 0), t.note, t.type, t.type === 'repayment' ? null : Number(t.feeRate != null ? t.feeRate : DEFAULT_FEE_RATE),
      t.limitAmount != null ? Number(t.limitAmount) : null, t.instId != null ? Number(t.instId) : null, t.instPeriod != null ? Number(t.instPeriod) : null]));
   (data.installments || []).forEach(n => run(
-    `INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note,feeMode,monthRate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [n.id, n.cardId, n.name, Number(n.principal || 0), Number(n.periods || 1), Number(n.postedBase || 0),
-     Number(n.perPrincipal || 0), Number(n.perFee || 0), n.startDate, n.occupyLimit ? 1 : 0, n.status || 'active', n.note || '']));
+     Number(n.perPrincipal || 0), Number(n.perFee || 0), n.startDate, n.occupyLimit ? 1 : 0, n.status || 'active', n.note || '',
+     n.feeMode === 'declining' ? 'declining' : 'flat', Number(n.monthRate || 0)]));
   db.exec('COMMIT');
 }
 
@@ -254,13 +260,19 @@ async function deleteFee(cardId, feeId) { run('DELETE FROM annual_fees WHERE car
      占用额度 — 本金早被银行占掉了,每期入账只扣手续费 */
 function money2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 
-/* 等本等息真实年化(IRR,监管披露口径),二分法解月利率再 ×12。
-   不入库,每次由本金/期数/每期还款现算,改了金额自动跟着变。 */
-function instAnnualRate(principal, periods, perPay) {
-  principal = Number(principal); periods = Math.round(Number(periods)); perPay = Number(perPay);
-  if (!(principal > 0) || !(periods > 0) || !(perPay > 0)) return null;
-  if (perPay * periods <= principal + 1e-9) return 0;   // 总还款不超过本金 = 免息
-  const npv = r => { let sum = 0, f = 1; for (let t = 0; t < periods; t++) { f *= (1 + r); sum += perPay / f; } return sum - principal; };
+/* 真实年化(IRR,监管披露口径):吃「逐期还款额数组」,二分法解月利率再 ×12。
+   等本等息每期一个定额,等额本金每期递减,两种都走这里,不入库每次现算。
+   自校验:等额本金的 IRR 恰好等于名义年化(月利率×12),算出来不等就是哪里写错了;
+   等本等息约为名义的 2n/(n+1) 倍。 */
+function instIRR(principal, pays) {
+  principal = Number(principal);
+  if (!(principal > 0) || !pays || !pays.length) return null;
+  const n = pays.length;
+  let tot = 0;
+  for (let t = 0; t < n; t++) { const v = Number(pays[t]); if (!(v >= 0)) return null; tot += v; }
+  if (!(tot > 0)) return null;
+  if (tot <= principal + 1e-9) return 0;   // 总还款不超过本金 = 免息
+  const npv = r => { let sum = 0, f = 1; for (let t = 0; t < n; t++) { f *= (1 + r); sum += Number(pays[t]) / f; } return sum - principal; };
   let lo = 0, hi = 1;
   while (npv(hi) > 0 && hi < 1e4) hi *= 2;
   for (let i = 0; i < 200; i++) { const m = (lo + hi) / 2; if (npv(m) > 0) lo = m; else hi = m; }
@@ -293,23 +305,49 @@ function instPeriodDate(n, k) {
 function instInfo(n) {
   const periods = Math.max(1, Number(n.periods || 1));
   const principal = Number(n.principal || 0);
+  const declining = n.feeMode === 'declining';
+  const monthRate = Number(n.monthRate || 0);
   const perFee = money2(n.perFee || 0);
   const perP = Number(n.perPrincipal) > 0 ? money2(n.perPrincipal) : money2(principal / periods);
+  // 末期本金兜掉除不尽的尾差,保证累计本金恰好等于总本金
+  const periodPrincipal = k => (k >= periods ? money2(principal - perP * (periods - 1)) : perP);
+  /* 等额本金:当期利息 = 期初剩余本金 x 月利率(不按天),越还越少;
+     等本等息:每期同一个数,一直按总本金收。
+     小额分期当期利息不足一分时会出现连续多期 0.00,银行也是这样,不当异常处理。 */
+  const periodFee = k => {
+    if (!declining) return perFee;
+    if (!(monthRate > 0)) return 0;
+    const openP = principal - perP * (Math.max(1, k) - 1);   // 期初剩余本金
+    return money2(Math.max(0, openP) * monthRate);
+  };
+  /* 逐期计划表:每期日期/本金/利息/共还,对着银行还款计划表可以逐行核对。
+     剩余利息一律从这里逐期求和,不能用「每期 x 剩余期数」(那只对等本等息成立)。 */
+  const plan = [];
+  let feeTotal = 0;
+  for (let k = 1; k <= periods; k++) {
+    const p = periodPrincipal(k), f = periodFee(k);
+    feeTotal = money2(feeTotal + f);
+    plan.push({ k, date: instPeriodDate(n, k), p, f, pay: money2(p + f) });
+  }
   const posted = instPosted(n);
   const remain = Math.max(0, periods - posted);
   const closed = n.status === 'closed' || remain <= 0;
   const paidP = Math.min(principal, money2(perP * posted));
   const leftP = money2(Math.max(0, principal - paidP));
-  const nextK = posted + 1;
-  const nextDate = closed ? null : instPeriodDate(n, nextK);
-  const perPay = money2(perP + perFee);
-  const rate = instAnnualRate(principal, periods, money2(principal / periods + perFee));
+  const nextK = Math.min(periods, posted + 1);
+  const cur = plan[nextK - 1];
+  const nextDate = closed ? null : cur.date;
+  let pendingFee = 0;
+  for (let k = posted + 1; k <= periods; k++) pendingFee = money2(pendingFee + plan[k - 1].f);
+  /* 等本等息的现金流沿用原来的算法(principal/periods + perFee),保证老数据年化一个数都不变 */
+  const pays = declining ? plan.map(x => x.pay) : new Array(periods).fill(money2(principal / periods + perFee));
   return {
-    periods, principal, perFee, perP, perPay, posted, remain, closed, paidP, leftP, nextK, nextDate, rate,
-    feeTotal: money2(perFee * periods),
+    periods, principal, declining, monthRate, perFee, perP, posted, remain, closed, paidP, leftP, nextK, nextDate, plan,
+    curFee: cur.f, perPay: cur.pay, firstPay: plan[0].pay, lastPay: plan[periods - 1].pay,
+    feeTotal, pendingFee, payTotal: money2(principal + feeTotal),
+    rate: instIRR(principal, pays),
     pct: Math.min(100, Math.max(0, posted / periods * 100)),
-    // 末期本金兜掉除不尽的尾差,保证累计本金恰好等于总本金
-    periodPrincipal: k => (k >= periods ? money2(principal - perP * (periods - 1)) : perP)
+    periodPrincipal, periodFee
   };
 }
 /* 卡片维度汇总:待入账本金 + 占额度型的已占本金 */
@@ -322,8 +360,8 @@ function cardInstSummary(cardId) {
     if (i.closed) return;
     out.active += 1;
     out.pendingP = money2(out.pendingP + i.leftP);
-    /* 剩余手续费 = 每期手续费 x 剩余期数,和剩余本金分开显示,免得混成一个数看不出构成 */
-    out.pendingFee = money2(out.pendingFee + i.perFee * i.remain);
+    /* 剩余利息由 instInfo 逐期求和给出(等额本金每期都不一样),和剩余本金分开显示 */
+    out.pendingFee = money2(out.pendingFee + i.pendingFee);
     out.maxRemain = Math.max(out.maxRemain, i.remain);
     out.pendingPay = money2(out.pendingPay + i.perPay);
     if (n.occupyLimit) out.occupyP = money2(out.occupyP + i.leftP);
@@ -338,14 +376,16 @@ async function saveInst(cardId, instId, input) {
   const remaining = Math.min(periods, Math.max(0, Math.round(Number(input.remaining != null ? input.remaining : periods))));
   const principal = Number(input.principal || 0);
   const perPrincipal = Number(input.perPrincipal) > 0 ? Number(input.perPrincipal) : money2(principal / periods);
+  const declining = input.feeMode === 'declining';
   const vals = [input.name || '分期', principal, periods, periods - remaining, perPrincipal,
-    Number(input.perFee || 0), input.startDate || '', input.occupyLimit ? 1 : 0, input.status || 'active', input.note || ''];
+    declining ? 0 : Number(input.perFee || 0), input.startDate || '', input.occupyLimit ? 1 : 0, input.status || 'active', input.note || '',
+    declining ? 'declining' : 'flat', declining ? Number(input.monthRate || 0) : 0];
   if (instId == null) {
     const id = (Number(scalar('SELECT MAX(id) FROM installments WHERE cardId=?', [cardId])) || 0) + 1;
-    run(`INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    run(`INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note,feeMode,monthRate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, cardId].concat(vals));
   } else {
-    run(`UPDATE installments SET name=?,principal=?,periods=?,postedBase=?,perPrincipal=?,perFee=?,startDate=?,occupyLimit=?,status=?,note=? WHERE cardId=? AND id=?`,
+    run(`UPDATE installments SET name=?,principal=?,periods=?,postedBase=?,perPrincipal=?,perFee=?,startDate=?,occupyLimit=?,status=?,note=?,feeMode=?,monthRate=? WHERE cardId=? AND id=?`,
       vals.concat([cardId, instId]));
   }
   await persist();
@@ -388,11 +428,13 @@ async function catchUpInstallments() {
       const k = i.nextK;
       const dup = Number(scalar('SELECT COUNT(*) FROM transactions WHERE cardId=? AND instId=? AND instPeriod=?', [n.cardId, n.id, k])) || 0;
       if (dup) break;
+      /* 本期金额按期号现算:等额本金每期利息不同,不能拿一个定额一路记下去 */
       const pp = i.periodPrincipal(k);
+      const pf = i.periodFee(k);
       await addTransaction(n.cardId, {
-        type: 'spend', date: i.nextDate, time: '00:00', amount: money2(pp + i.perFee),
+        type: 'spend', date: i.nextDate, time: '00:00', amount: money2(pp + pf),
         note: `${n.name || '分期'} 第 ${k}/${i.periods} 期`, feeRate: 0,
-        limitAmount: n.occupyLimit ? i.perFee : null,
+        limitAmount: n.occupyLimit ? pf : null,
         instId: n.id, instPeriod: k
       });
       done += 1;
@@ -424,7 +466,8 @@ function cardInstLine(cardId) {
   const term = s.active > 1 ? `最长 ${s.maxRemain} 期` : `剩余 ${s.maxRemain} 期`;
   return `<span class="inst-line"><span class="ii">分</span>` +
     `<span class="it"><span class="it-1">分期 ${s.active} 笔 · ${term}</span>` +
-    `<span class="it-2">本金 ${yuan(s.pendingP)}${s.pendingFee > 0 ? ` ＋ 手续费 ${yuan(s.pendingFee)}` : ' · 免手续费'}</span></span>` +
+    /* 措辞统一说「利息」:两种计息方式混在一张卡上时不再分词,避免出现"费息"这种要想一下的说法 */
+    `<span class="it-2">本金 ${yuan(s.pendingP)}${s.pendingFee > 0 ? ` ＋ 利息 ${yuan(s.pendingFee)}` : ' · 免利息'}</span></span>` +
     `<span class="is">${yuan(left)}</span></span>`;
 }
 function cardItemHTML(c) {
@@ -619,17 +662,26 @@ function instEntryHTML(id) {
     : '点击添加分期，到入账日自动记账 ›';
   return `<div class="inst-entry" onclick="openInsts(${id})"><span class="ie-icon">分</span><span class="ie-body"><span class="ie-title">分期 · ${esc(state)}</span><span class="ie-sub">${sub}</span></span><span class="ie-state">${sum.count ? '查看' : '添加'}</span></div>`;
 }
+/* 年化百分数:monthRate 存的是月利率小数,x1200 会带浮点噪声(0.005x1200=6.000000000000001),要收一下 */
+function annualPct(monthRate) { return Math.round(Number(monthRate || 0) * 1200 * 1e6) / 1e6; }
+function plainNum(v) { return Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: (v % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
+function plainNum2(v) { return Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
 function instRowHTML(cardId, n) {
   const i = instInfo(n);
   const tag = i.closed ? '<span class="inst-tag done">已结清</span>'
     : (n.occupyLimit ? '<span class="inst-tag occupy">占用额度</span>' : '<span class="inst-tag">不占额度</span>');
+  /* 计息方式标签和占额度标签并列:两种混在一张卡上时一眼能分开 */
+  const modeTag = i.closed ? '' : (i.declining ? '<span class="inst-tag dec">等额本金</span>' : '<span class="inst-tag flat">等本等息</span>');
   const sub = i.closed ? `本金 ${yuan(i.principal)} · 共 ${i.periods} 期`
-    : `每期 ${yuan(i.perP)} + 手续费 ${yuan(i.perFee)}`;
-  const foot = i.closed ? `本金 ${yuan(i.principal)} · 累计手续费 ${yuan(i.feeTotal)}`
+    : (i.declining
+      ? `每期 ${yuan(i.perP)} ＋ 利息 ${yuan(i.curFee)}（本期）· 年化 ${annualPct(i.monthRate).toFixed(2)}%`
+      : `每期 ${yuan(i.perP)} ＋ 利息 ${yuan(i.perFee)}`);
+  const foot = i.closed ? `本金 ${yuan(i.principal)} · 累计利息 ${yuan(i.feeTotal)}`
     : `下次入账 ${esc(i.nextDate || '未设置')} · 剩余本金 ${yuan(i.leftP)}`;
   return `<div class="inst-row${i.closed ? ' settled' : ''}" onclick="openEditInst(${cardId},${n.id})">` +
     `<div class="ir-top"><span class="ir-ic">${i.closed ? '✓' : '分'}</span>` +
-    `<span class="ir-body"><span class="ir-title">${esc(n.name || '分期')} ${Number(i.principal).toLocaleString('zh-CN')}${tag}</span><span class="ir-sub">${sub}</span></span>` +
+    `<span class="ir-body"><span class="ir-title">${esc(n.name || '分期')} ${Number(i.principal).toLocaleString('zh-CN')}${tag}${modeTag}</span><span class="ir-sub">${sub}</span></span>` +
     `<span class="ir-amt"><span class="ir-per">${yuan(i.perPay)}</span><span class="ir-left">${i.closed ? '' : '剩 '}${i.remain || i.periods} / ${i.periods} 期</span></span></div>` +
     `<div class="inst-bar"><span style="width:${i.pct}%"></span></div>` +
     `<div class="inst-foot"><span>${foot}</span>${rateChipHTML(i.rate)}</div></div>`;
@@ -640,36 +692,105 @@ function openInsts(id) {
   const list = rows.length ? rows.map(n => instRowHTML(id, n)).join('') : '<div class="flow-empty">该卡未设置分期</div>';
   setModal('分期',
     (lastCatchUp ? `<div class="autopost"><span class="ap-ic">✓</span><span class="ap-tx">本次打开自动补记了 ${lastCatchUp} 期分期入账，已从对应卡片的可用额度中扣减。</span></div>` : '') +
-    `<p class="muted" style="margin:-6px 0 12px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')} — 点任意一笔可编辑；到入账日打开网页会自动记账</p>` +
+    `<p class="muted" style="margin:-6px 0 12px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')} — 点任意一笔可编辑或查看逐期计划；到入账日打开网页会自动记账</p>` +
     list +
     (rows.length ? `<div class="rate-legend"><em>档位</em><span class="rate-chip free">免息</span><span class="rate-chip low">&lt; 8%</span><span class="rate-chip mid">8 ~ 15%</span><span class="rate-chip high">≥ 15%</span></div>` : '') +
     `<button class="add-rule" onclick="openAddInst(${id})">＋ 新增分期</button>`);
 }
+
+/* 逐期计划表:每期日期/本金/利息/共还,对着银行的还款计划表逐行核对。
+   默认只展开 6 行,长分期不至于把弹层撑太长。 */
+function openInstPlan(cardId, instId, all) {
+  const c = getCard(cardId), n = getInst(cardId, instId);
+  if (!c || !n) return;
+  const i = instInfo(n);
+  const show = all ? i.periods : Math.min(i.periods, 6);
+  let rows = '';
+  for (let k = 1; k <= show; k++) {
+    const r = i.plan[k - 1];
+    const cls = k <= i.posted ? ' paid' : (!i.closed && k === i.nextK ? ' next' : '');
+    rows += `<div class="plan-row${cls}"><span class="pn">${k}</span><span class="pd">${r.date ? esc(r.date.slice(5)) : '--'}</span>` +
+      `<span>${plainNum(r.p)}</span><span>${plainNum2(r.f)}</span><b>${plainNum2(r.pay)}</b></div>`;
+  }
+  const more = show < i.periods
+    ? `<button class="plan-more" onclick="openInstPlan(${cardId},${instId},1)">展开剩余 ${i.periods - show} 期 ▾</button>` : '';
+  const head = i.declining
+    ? `每期本金 ${yuan(i.perP)}，利息按期初剩余本金 × 月利率 ${(annualPct(i.monthRate) / 12).toFixed(3)}% 算，共还 ${yuan(i.firstPay)}<span class="dec-arrow">→</span>${yuan(i.lastPay)}`
+    : `每期本金 ${yuan(i.perP)} ＋ 利息 ${yuan(i.perFee)}，每期共还 ${yuan(i.perPay)}`;
+  setModal('逐期计划',
+    `<p class="muted" style="margin:-6px 0 4px">${esc(n.name || '分期')} · ${esc(c.bank || c.name)} 尾号 ${esc(c.tail || '----')}</p>` +
+    `<p class="muted" style="margin:0 0 2px;font-size:11px">${head}</p>` +
+    `<div class="plan-wrap">` +
+    `<div class="plan-head"><span>期</span><span>日期</span><span>本金</span><span>利息</span><span>共还</span></div>` +
+    rows + more +
+    `<div class="plan-foot"><span>合计 本金 ${yuan(i.principal)} ＋ 利息 ${yuan(i.feeTotal)}</span><b>${yuan(i.payTotal)}</b></div>` +
+    `</div>` +
+    `<p class="muted" style="margin:9px 0 0;font-size:11px">灰行已入账（额度已扣过），蓝行是下一期，白行还没到。已入账 ${i.posted} / ${i.periods} 期，剩余待入账 本金 ${yuan(i.leftP)} ＋ 利息 ${yuan(i.pendingFee)}。末期本金兜掉了除不尽的尾差，累计恰好等于总本金。</p>` +
+    `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="openEditInst(${cardId},${instId})">返回这笔分期</button>` +
+    `<button class="secondary-action" onclick="openInsts(${cardId})">返回分期列表</button>`);
+}
+
 /* 表单:边填边算真实年化,金额一改预览就跟着变 */
+function instModeSel() { const b = document.querySelector('#iMode button.on'); return b && b.dataset.m === 'declining' ? 'declining' : 'flat'; }
+/* 预览用一条临时分期喂 instInfo,保证预览和真正入账走的是同一套算法,不会两边算法漂移。
+   cardId/id 给 -1,查不到入账流水,posted 恒为 0。 */
+function previewInstInfo() {
+  const mode = instModeSel();
+  const rate = parseFloat(val('iRate')) || 0;
+  return instInfo({
+    cardId: -1, id: -1, name: '', principal: parseFloat(val('iPrincipal')) || 0,
+    periods: Math.max(1, Math.round(parseFloat(val('iPeriods')) || 0) || 1), postedBase: 0,
+    perPrincipal: parseFloat(val('iPerP')) || 0, perFee: mode === 'declining' ? 0 : (parseFloat(val('iFee')) || 0),
+    startDate: val('iStart'), occupyLimit: 0, status: 'active',
+    feeMode: mode, monthRate: mode === 'declining' && rate > 0 ? rate / 1200 : 0
+  });
+}
 function updateInstPreview() {
   const box = document.getElementById('instPrev'); if (!box) return;
-  const principal = parseFloat(val('iPrincipal')) || 0;
-  const periods = Math.max(1, Math.round(parseFloat(val('iPeriods')) || 0) || 1);
-  const perFee = parseFloat(val('iFee')) || 0;
-  const perP = parseFloat(val('iPerP')) > 0 ? parseFloat(val('iPerP')) : (principal ? money2(principal / periods) : 0);
-  const perPay = money2(perP + perFee);
-  const rate = instAnnualRate(principal, periods, perPay);
-  const monthly = principal > 0 ? perFee / principal : 0;
-  document.getElementById('iPerHint').textContent = perP ? `每期本金 ${yuan(perP)}，每期共还 ${yuan(perPay)}` : '填入总本金和期数后自动计算';
-  box.innerHTML = principal > 0 && perPay > 0
-    ? `<span>月费率 ${(monthly * 100).toFixed(3)}% · 名义年化 ${(monthly * 12 * 100).toFixed(2)}%</span>${rateChipHTML(rate)}`
+  const i = previewInstInfo();
+  const hint = document.getElementById('iPerHint');
+  if (i.declining) {
+    if (hint) hint.textContent = i.perP
+      ? `每期本金 ${yuan(i.perP)}，首期共还 ${yuan(i.firstPay)}，末期共还 ${yuan(i.lastPay)}，利息合计 ${yuan(i.feeTotal)}，总还 ${yuan(i.payTotal)}`
+      : '填入总本金和期数后自动计算';
+    box.innerHTML = i.principal > 0 && i.monthRate > 0
+      ? `<span>月利率 ${(annualPct(i.monthRate) / 12).toFixed(3)}% · 名义年化 ${annualPct(i.monthRate).toFixed(2)}%</span>${rateChipHTML(i.rate)}`
+      : `<span>填入年化利率后显示测算</span>`;
+    return;
+  }
+  const monthly = i.principal > 0 ? i.perFee / i.principal : 0;
+  if (hint) hint.textContent = i.perP ? `每期本金 ${yuan(i.perP)}，每期共还 ${yuan(i.perPay)}` : '填入总本金和期数后自动计算';
+  box.innerHTML = i.principal > 0 && i.perPay > 0
+    ? `<span>月费率 ${(monthly * 100).toFixed(3)}% · 名义年化 ${(monthly * 12 * 100).toFixed(2)}%</span>${rateChipHTML(i.rate)}`
     : `<span>填入金额后显示真实年化</span>`;
+}
+/* 两种计息方式共用一个输入位:等本等息填每期手续费,等额本金填年化利率,只切标签不切界面 */
+function syncInstMode() {
+  const dec = instModeSel() === 'declining';
+  const fw = document.getElementById('iFeeWrap'), rw = document.getElementById('iRateWrap'), mh = document.getElementById('iModeHint');
+  if (fw) fw.style.display = dec ? 'none' : '';
+  if (rw) rw.style.display = dec ? '' : 'none';
+  if (mh) mh.textContent = dec
+    ? '等额本金：每期本金固定，利息＝期初剩余本金 × 月利率，越还越少。'
+    : '等本等息：每期手续费是同一个数，一直按总本金收。';
+  updateInstPreview();
 }
 function instForm(n) {
   const occupy = n ? Number(n.occupyLimit) : 0;
+  const dec = !!(n && n.feeMode === 'declining');
   const i = n ? instInfo(n) : null;
+  const rateVal = dec && Number(n.monthRate) > 0 ? annualPct(n.monthRate) : '';
   return `<div class="type-seg" id="iSeg"><button class="${occupy ? '' : 'on'}" data-o="0">不占额度</button><button class="${occupy ? 'on' : ''}" data-o="1">占用额度</button></div>` +
-    `<p class="muted" style="margin:8px 0 2px;font-size:11px">不占额度：每期扣「本金＋手续费」。占用额度：本金已被银行扣掉，每期只扣手续费。可用额度始终照抄银行 APP。</p>` +
+    `<p class="muted" style="margin:8px 0 2px;font-size:11px">不占额度：每期扣「本金＋利息」。占用额度：本金已被银行扣掉，每期只扣利息。可用额度始终照抄银行 APP。</p>` +
+    `<div class="type-seg" id="iMode" style="margin-top:12px"><button class="${dec ? '' : 'on'}" data-m="flat">等本等息</button><button class="${dec ? 'on' : ''}" data-m="declining">等额本金</button></div>` +
+    `<p class="muted" id="iModeHint" style="margin:8px 0 2px;font-size:11px">等本等息：每期手续费是同一个数，一直按总本金收。</p>` +
     `<label class="field-label">分期名称</label><input id="iName" class="modal-input" value="${esc(n ? n.name : '')}" placeholder="例如 消费分期 / 账单分期">` +
     `<label class="field-label">总本金</label><input id="iPrincipal" class="modal-input" inputmode="decimal" value="${n ? Number(n.principal) : ''}" placeholder="例如 48000" oninput="updateInstPreview()">` +
     `<label class="field-label">总期数 / 剩余期数</label><div class="query-bar"><input id="iPeriods" class="modal-input" inputmode="numeric" value="${n ? Number(n.periods) : ''}" placeholder="12" oninput="updateInstPreview()"><input id="iRemain" class="modal-input" inputmode="numeric" value="${i ? i.remain : ''}" placeholder="剩余 12"></div>` +
     `<label class="field-label">每期本金（留空按总本金÷期数）</label><input id="iPerP" class="modal-input" inputmode="decimal" value="${n && Number(n.perPrincipal) ? Number(n.perPrincipal) : ''}" placeholder="自动计算" oninput="updateInstPreview()">` +
-    `<label class="field-label">每期手续费</label><input id="iFee" class="modal-input" inputmode="decimal" value="${n ? Number(n.perFee) : ''}" placeholder="例如 66.53" oninput="updateInstPreview()">` +
+    `<div id="iFeeWrap"${dec ? ' style="display:none"' : ''}><label class="field-label">每期手续费</label><input id="iFee" class="modal-input" inputmode="decimal" value="${n && !dec ? Number(n.perFee) : ''}" placeholder="例如 66.53" oninput="updateInstPreview()"></div>` +
+    `<div id="iRateWrap"${dec ? '' : ' style="display:none"'}><label class="field-label">年化利率（%）</label><input id="iRate" class="modal-input" inputmode="decimal" value="${rateVal}" placeholder="例如 6" oninput="updateInstPreview()">` +
+    `<p class="muted" style="margin:6px 0 0;font-size:11px">照抄银行分期详情页的「年化利率」那个数，别的都不用填，程序 ÷12 得月利率。这是唯一能做到逐期零误差的填法。</p></div>` +
     `<div class="settle-line" id="instPrev"><span>填入金额后显示真实年化</span></div>` +
     `<p class="muted" id="iPerHint" style="margin:6px 0 0;font-size:11px">填入总本金和期数后自动计算</p>` +
     `<label class="field-label">下次入账日</label><input id="iStart" class="modal-input" type="date" value="${esc(n ? n.startDate : '')}">` +
@@ -680,14 +801,23 @@ function bindInstForm() {
     document.querySelectorAll('#iSeg button').forEach(x => x.classList.remove('on'));
     b.classList.add('on');
   });
-  updateInstPreview();
+  document.querySelectorAll('#iMode button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('#iMode button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    syncInstMode();
+  });
+  syncInstMode();
 }
 function readInstForm() {
   const seg = document.querySelector('#iSeg button.on');
+  const mode = instModeSel();
+  const rateRaw = val('iRate');
+  const rate = parseFloat(rateRaw) || 0;
   return {
     name: val('iName') || '分期', principal: parseFloat(val('iPrincipal')) || 0,
     periods: parseFloat(val('iPeriods')) || 0, remaining: val('iRemain') === '' ? null : parseFloat(val('iRemain')),
-    perPrincipal: parseFloat(val('iPerP')) || 0, perFee: parseFloat(val('iFee')) || 0,
+    perPrincipal: parseFloat(val('iPerP')) || 0, perFee: mode === 'declining' ? 0 : (parseFloat(val('iFee')) || 0),
+    feeMode: mode, monthRate: mode === 'declining' && rate > 0 ? rate / 1200 : 0, rateRaw,
     startDate: val('iStart'), occupyLimit: seg ? seg.dataset.o === '1' : false, note: val('iNote')
   };
 }
@@ -701,6 +831,7 @@ function openEditInst(id, instId) {
   setModal('编辑分期', instForm(n) +
     `<p class="muted" style="margin:12px 0 0;font-size:11px">已入账 ${i.posted} / ${i.periods} 期。改剩余期数会重设已入账基线，已生成的入账流水不会被删。</p>` +
     `<button class="primary-action" onclick="saveInstForm(${id},${instId})">保存修改</button>` +
+    `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="openInstPlan(${id},${instId},0)">查看逐期计划（${i.periods} 期）</button>` +
     (n.status === 'closed'
       ? `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="reopenInstUI(${id},${instId})">恢复为进行中</button>`
       : `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="closeInstUI(${id},${instId})">标记已结清（停止入账）</button>`) +
@@ -711,6 +842,8 @@ async function saveInstForm(id, instId) {
   const input = readInstForm();
   if (!(input.principal > 0)) { toast('请输入总本金'); return; }
   if (!(input.periods >= 1)) { toast('请输入总期数'); return; }
+  /* 等额本金必须有年化利率才能逐期算利息;填 0 是允许的(等于免息分期),只拦空着不填 */
+  if (input.feeMode === 'declining' && String(input.rateRaw || '').trim() === '') { toast('请输入年化利率（照抄银行分期详情页）'); return; }
   if (!input.startDate) { toast('请选择下次入账日'); return; }
   if (input.remaining == null) input.remaining = input.periods;
   const old = instId != null ? getInst(id, instId) : null;
@@ -989,7 +1122,7 @@ function summarizeDb(source) {
     const txs = allFrom(source, 'SELECT id,cardId,date,time,amount,note,type,feeRate,limitAmount,instId,instPeriod FROM transactions ORDER BY id');
     const afs = allFrom(source, 'SELECT cardId,id,name,chargeDate,requirement,status,note FROM annual_fees ORDER BY cardId,id');
     let insts = [];
-    try { insts = allFrom(source, 'SELECT cardId,id,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note FROM installments ORDER BY cardId,id'); }
+    try { insts = allFrom(source, 'SELECT cardId,id,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note,feeMode,monthRate FROM installments ORDER BY cardId,id'); }
     catch (e) { insts = []; }   // 老备份没有这张表
     const totalAvail = cards.reduce((s, c) => s + Number(c.available || 0), 0);
     const lastTx = txs.reduce((m, t) => { const d = String(t.date || ''); return d > m ? d : m; }, '');
@@ -1036,7 +1169,7 @@ function computeDiffs(L, C) {
   const cardFields = [['user', '户名'], ['bank', '银行'], ['name', '卡名'], ['tail', '尾号'], ['total', '总额度', CNY], ['fixed', '固定额度', CNY], ['temporary', '临时额度', CNY], ['available', '可用额度', CNY], ['billDay', '账单日'], ['repayDay', '还款日']];
   const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率'], ['limitAmount', '影响额度金额', CNY], ['instPeriod', '分期期号']];
   const afFields = [['name', '名称'], ['chargeDate', '收取日'], ['requirement', '要求'], ['status', '状态'], ['note', '备注']];
-  const instFields = [['name', '名称'], ['principal', '总本金', CNY], ['periods', '总期数'], ['postedBase', '已入账基线'], ['perPrincipal', '每期本金', CNY], ['perFee', '每期手续费', CNY], ['startDate', '下次入账日'], ['occupyLimit', '占用额度', v => Number(v) ? '是' : '否'], ['status', '状态'], ['note', '备注']];
+  const instFields = [['name', '名称'], ['principal', '总本金', CNY], ['periods', '总期数'], ['postedBase', '已入账基线'], ['perPrincipal', '每期本金', CNY], ['perFee', '每期手续费', CNY], ['feeMode', '计息方式', v => v === 'declining' ? '等额本金' : '等本等息'], ['monthRate', '年化利率', v => (Number(v || 0) * 1200).toFixed(2) + '%'], ['startDate', '下次入账日'], ['occupyLimit', '占用额度', v => Number(v) ? '是' : '否'], ['status', '状态'], ['note', '备注']];
   return [].concat(
     diffRecords(L.raw.cards, C.raw.cards, r => r.id, c => `#${c.id} ${c.bank || ''}${c.name ? ' ' + c.name : ''}`.trim(), cardFields, '卡片'),
     diffRecords(L.raw.txs, C.raw.txs, r => r.id, t => `#${t.id} ${t.date || ''} ${TXTYPE(t.type)}`.trim(), txFields, '流水'),
