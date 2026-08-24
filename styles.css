@@ -140,3 +140,31 @@ h1,h2,p{margin:0}h1{font-size:28px;letter-spacing:-.02em}h2{font-size:19px;lette
 /* iOS 兜底:文本输入框默认字号 16px,否则 Safari 聚焦时会自动放大整页(把右边界推出屏幕)。
    用最低优先级的元素选择器,不会覆盖 .big-amount-input(30px)等更具体的类。 */
 input,textarea,select{font-size:16px}
+/* 码牌页(收款码牌) */
+.plate-filter{display:flex;align-items:center;justify-content:space-between;margin:0 2px 12px}
+.plate-filter .plate-count{font-size:12px;color:var(--muted)}
+.plate-filter .pf-btns{display:flex;gap:6px}
+.plate-filter .pf-btns button{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:4px 10px;font-size:11px;font-weight:600;color:var(--muted);cursor:pointer}
+.plate-filter .pf-btns button.on{border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}
+.plate-list{display:flex;flex-direction:column;gap:10px}
+.plate{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:13px 14px;box-shadow:0 4px 12px rgba(31,50,80,.035);width:100%;text-align:left;cursor:pointer;max-width:100%}
+.plate .pm{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;font-size:16px;font-weight:800;color:#fff;flex:0 0 auto}
+.pm.ali{background:#1677ff}.pm.wx{background:#07c160}.pm.none{background:#aab3bf}
+.plate-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:5px}
+.plate-name{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plate-owner{font-size:11px;color:var(--muted)}.plate-owner b{color:#59636f;font-weight:600}
+.plate-right{text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:0 0 auto}
+.way{font-size:10px;font-weight:700;padding:3px 9px;border-radius:8px;white-space:nowrap}
+.way.ali{background:#e9f2ff;color:#1677ff}.way.wx{background:#e5f8ee;color:#07c160}.way.none{background:#f0f2f5;color:#8993a2}
+.plate-time{font-size:10px;color:var(--muted);white-space:nowrap}
+.plate-ctx{display:flex;align-items:center;gap:10px;background:#f7f8fa;border:1px solid var(--line);border-radius:13px;padding:10px 12px;margin:2px 0 4px}
+.plate-ctx .pm{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:14px;font-weight:800;color:#fff;flex:0 0 auto}
+.plate-ctx b{font-size:13px}.plate-ctx small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.way-seg{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:6px}
+.way-seg button{display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line);background:#fff;border-radius:11px;padding:11px 4px;font-size:13px;font-weight:700;color:var(--muted);cursor:pointer}
+.way-seg button.ali.on{border-color:#1677ff;background:#e9f2ff;color:#1677ff}
+.way-seg button.wx.on{border-color:#07c160;background:#e5f8ee;color:#07c160}
+.way-seg .dot{width:18px;height:18px;border-radius:6px;display:grid;place-items:center;font-size:11px;color:#fff;font-weight:800}
+.way-seg button.ali .dot{background:#1677ff}.way-seg button.wx .dot{background:#07c160}
+.field-label .hint{color:#a2abb8;font-weight:400}
+.sort-row small{display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:2px}

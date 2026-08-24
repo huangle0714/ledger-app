@@ -9,8 +9,8 @@
 <title>开发系统</title>
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="apple-touch-icon" href="./icon.svg" />
-<link rel="stylesheet" href="./styles.css?v=20260824c" />
-<link rel="stylesheet" href="./pwa-overrides.css?v=20260824c" />
+<link rel="stylesheet" href="./styles.css?v=20260824d" />
+<link rel="stylesheet" href="./pwa-overrides.css?v=20260824d" />
 </head>
 <body>
 
@@ -41,12 +41,10 @@
 <div class="card-list" id="homeCards"></div>
 </section>
 
-<section class="page" data-page="repayment">
-<div class="repayment-header"><div><p class="eyebrow" id="calMonthLabel">2026 年 8 月</p><h2>还款日历</h2></div><button class="month-button" onclick="toToday()">回今天</button></div>
-<div class="calendar-strip" id="calStrip"></div>
-<div class="cal-legend"><span><i class="d-due"></i>还款日</span><span><i class="d-bill"></i>账单日</span></div>
-<div class="flow-head"><h3>当日流水</h3><span class="flow-day" id="flowDay"></span></div>
-<div class="flow-list" id="dayFlow"></div>
+<section class="page" data-page="plates">
+<div class="section-heading"><div><p class="eyebrow">收款码牌</p><h2>我的码牌</h2></div><button class="sort-trigger" onclick="openPlateSort()">排序:<span id="plateSortName">最近在前</span> ⌄</button></div>
+<div class="plate-filter" id="plateFilter"><span class="plate-count" id="plateCount">共 0 个</span><span class="pf-btns"><button class="on" data-f="all" onclick="setPlateFilter('all')">全部</button><button data-f="ali" onclick="setPlateFilter('ali')">支付宝</button><button data-f="wx" onclick="setPlateFilter('wx')">微信</button></span></div>
+<div class="plate-list" id="plateList"></div>
 </section>
 
 <section class="page" data-page="settings">
@@ -65,11 +63,15 @@
 <button class="setting-row" onclick="openEditPick()"><span class="setting-icon orange">✎</span><span>修改卡片</span><span class="chevron">›</span></button>
 <button class="setting-row" onclick="openManage()"><span class="setting-icon red">🗑</span><span>删除卡片</span><span class="chevron">›</span></button>
 </div>
+<div class="settings-group"><p class="eyebrow">码牌管理</p>
+<button class="setting-row" onclick="openAddPlate()"><span class="setting-icon green">＋</span><span>添加码牌</span><span class="chevron">›</span></button>
+<button class="setting-row" onclick="openPlateManage()"><span class="setting-icon red">🗑</span><span>删除码牌</span><span class="chevron">›</span></button>
+</div>
 </section>
 
 <nav class="bottom-nav">
 <button class="nav-item active" onclick="go('home')"><span>⌂</span><small>总览</small></button>
-<button class="nav-item" onclick="go('repayment')"><span>✓</span><small>还款</small></button>
+<button class="nav-item" onclick="go('plates')"><span>▦</span><small>码牌</small></button>
 <button class="nav-item" onclick="go('settings')"><span>⚙</span><small>设置</small></button>
 </nav>
 </main>
@@ -121,7 +123,7 @@ if (/(\?|&)diag/.test(location.search)) {
 
 <script src="./vendor/sql-wasm.js"></script>
 <script src="./seed-data.js"></script>
-<script src="./app.js?v=20260824c"></script>
+<script src="./app.js?v=20260824d"></script>
 <script>
 // 已切换为普通联网网页：不再注册 Service Worker，也不依赖离线缓存。
 // 清理手机上旧版本留下的 Service Worker 和 Cache Storage，避免继续显示旧页面。

@@ -11,12 +11,13 @@ const SYNC_DIRTY_KEY = 'ledger-sync-dirty';
 const DEFAULT_PASS = '85168377';
 const AUTO_SYNC_DELAY = 1800;
 const MARKS = ['blue', 'orange', 'purple', 'teal', 'red'];
-const titles = { home: '总览', cards: '我的卡片', repayment: '还款', settings: '设置' };
+const titles = { home: '总览', cards: '我的卡片', plates: '码牌', settings: '设置' };
 
 let SQL = null;      // sql.js 模块
 let db = null;       // 当前数据库
 let sortKey = 'repayDay';
-let selectedDate = todayStr();
+let plateSort = 'desc';   // 码牌按上次使用时间:desc=最近在前(默认), asc=最早在前
+let plateFilter = 'all';  // all / ali(支付宝) / wx(微信)
 let dirty = localStorage.getItem(SYNC_DIRTY_KEY) === '1'; // 本地有未同步改动
 let autoSyncTimer = null;
 let syncRunning = false;
@@ -30,6 +31,7 @@ function pad(n) { return String(n).padStart(2, '0'); }
 function todayStr() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function nowTime() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function nowStamp() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function nowMinute() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function yuan(n) { return '¥' + Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
 function signed(n) { return (n < 0 ? '-' : '+') + '¥' + Math.abs(n).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -73,7 +75,9 @@ CREATE TABLE IF NOT EXISTS installments(
   perPrincipal REAL, perFee REAL, startDate TEXT,
   occupyLimit INTEGER NOT NULL DEFAULT 0, status TEXT, note TEXT,
   feeMode TEXT, monthRate REAL,
-  PRIMARY KEY(cardId, id));`;
+  PRIMARY KEY(cardId, id));
+CREATE TABLE IF NOT EXISTS plates(
+  id INTEGER PRIMARY KEY, name TEXT, owner TEXT, lastWay TEXT, lastUsedAt TEXT);`;
 
 /* 老库升级:全部 CREATE 都带 IF NOT EXISTS,可反复执行;
    后加的列用 PRAGMA 探测后单独补,老备份读进来一样走这里。
@@ -111,6 +115,9 @@ function seedFrom(data) {
     [n.id, n.cardId, n.name, Number(n.principal || 0), Number(n.periods || 1), Number(n.postedBase || 0),
      Number(n.perPrincipal || 0), Number(n.perFee || 0), n.startDate, n.occupyLimit ? 1 : 0, n.status || 'active', n.note || '',
      n.feeMode === 'declining' ? 'declining' : 'flat', Number(n.monthRate || 0)]));
+  (data.plates || []).forEach(p => run(
+    `INSERT INTO plates(id,name,owner,lastWay,lastUsedAt) VALUES(?,?,?,?,?)`,
+    [p.id, p.name || '', p.owner || '', p.lastWay || '', p.lastUsedAt || '']));
   db.exec('COMMIT');
 }
 
@@ -517,37 +524,122 @@ function flowItemHTML(tx, tap) {
     `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}</span></span>` +
     `<span class="flow-amt ${k}">${signed(amt)}</span></div>`;
 }
-function renderRepayment() {
-  const cs = getCards();
-  const base = parseDate(selectedDate);
-  document.getElementById('calMonthLabel').textContent = `${base.getFullYear()} 年 ${base.getMonth() + 1} 月`;
-  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  let html = '';
-  for (let off = -3; off <= 3; off++) {
-    const d = new Date(base); d.setDate(base.getDate() + off);
-    const ds = fmtDate(d);
-    const isDue = cs.some(c => isRepayOn(c, ds));
-    const isBill = cs.some(c => isBillOn(c, ds));
-    const cls = [ds === selectedDate ? 'selected-day' : '', ds === todayStr() ? 'today' : '', isDue ? 'due-day' : '', isBill ? 'bill-day' : ''].filter(Boolean).join(' ');
-    const lbl = ds === todayStr() ? '今天' : week[d.getDay()];
-    html += `<span class="${cls}" onclick="selDay('${ds}')"><small>${lbl}</small>${d.getDate()}${(isDue || isBill) ? '<i></i>' : ''}</span>`;
-  }
-  document.getElementById('calStrip').innerHTML = html;
-  const d = parseDate(selectedDate);
-  document.getElementById('flowDay').textContent = `${d.getMonth() + 1}月${d.getDate()}日`;
-  const flows = allTx().filter(t => t.date === selectedDate);
-  document.getElementById('dayFlow').innerHTML = flows.length ? flows.map(t => flowItemHTML(t, true)).join('') : '<div class="flow-empty">当日暂无流水记录</div>';
+/* ---------- 码牌页(替换原「还款」页) ---------- */
+function wayLabel(w) { return w === 'ali' ? '支付宝' : w === 'wx' ? '微信' : '未使用'; }
+function wayMark(w) { return w === 'ali' ? '支' : w === 'wx' ? '微' : '码'; }
+function wayClass(w) { return w === 'ali' ? 'ali' : w === 'wx' ? 'wx' : 'none'; }
+
+function getPlates() { return all('SELECT * FROM plates ORDER BY id'); }
+function getPlate(id) { const r = all('SELECT * FROM plates WHERE id=?', [id]); return r[0] || null; }
+async function addPlate(input) {
+  const id = nextId('plates');
+  run('INSERT INTO plates(id,name,owner,lastWay,lastUsedAt) VALUES(?,?,?,?,?)',
+    [id, input.name || '', input.owner || '', input.lastWay || '', input.lastUsedAt || '']);
+  await persist(); return id;
 }
-function renderAll() { renderHome(); renderCards(); renderRepayment(); }
+async function updatePlateUse(id, way, usedAt) {
+  run('UPDATE plates SET lastWay=?,lastUsedAt=? WHERE id=?', [way || '', usedAt || '', id]);
+  await persist();
+}
+async function deletePlate(id) { run('DELETE FROM plates WHERE id=?', [id]); await persist(); }
+
+/* 只按上次使用时间排序:desc=最近在前, asc=最早在前;未使用(空时间)永远沉底 */
+function sortedPlates() {
+  const rows = getPlates().filter(p => plateFilter === 'all' || p.lastWay === plateFilter);
+  rows.sort((a, b) => {
+    const av = String(a.lastUsedAt || ''), bv = String(b.lastUsedAt || '');
+    if (!av && !bv) return Number(b.id) - Number(a.id);
+    if (!av) return 1;
+    if (!bv) return -1;
+    if (av === bv) return Number(b.id) - Number(a.id);
+    return plateSort === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+  return rows;
+}
+function plateItemHTML(p) {
+  const wc = wayClass(p.lastWay);
+  const used = p.lastUsedAt ? '上次 ' + esc(String(p.lastUsedAt).slice(5)) : '未使用';
+  return `<button class="plate" onclick="openPlateEdit(${p.id})">` +
+    `<span class="pm ${wc}">${wayMark(p.lastWay)}</span>` +
+    `<span class="plate-main"><span class="plate-name">${esc(p.name || '未命名码牌')}</span>` +
+    `<span class="plate-owner">归属 <b>${esc(p.owner || '—')}</b></span></span>` +
+    `<span class="plate-right"><span class="way ${wc}">${wayLabel(p.lastWay)}</span>` +
+    `<span class="plate-time">${used}</span></span>` +
+    `<span class="chevron">›</span></button>`;
+}
+function renderPlates() {
+  const list = document.getElementById('plateList'); if (!list) return;
+  const rows = sortedPlates();
+  const cnt = document.getElementById('plateCount'); if (cnt) cnt.textContent = '共 ' + rows.length + ' 个';
+  const sn = document.getElementById('plateSortName'); if (sn) sn.textContent = plateSort === 'asc' ? '最早在前' : '最近在前';
+  document.querySelectorAll('#plateFilter [data-f]').forEach(b => b.classList.toggle('on', b.dataset.f === plateFilter));
+  list.innerHTML = rows.length ? rows.map(plateItemHTML).join('')
+    : `<div class="flow-empty">${getPlates().length ? '没有符合筛选的码牌' : '还没有码牌，去设置里「添加码牌」'}</div>`;
+}
+function setPlateFilter(f) { plateFilter = (f === 'ali' || f === 'wx') ? f : 'all'; renderPlates(); }
+function openPlateSort() {
+  const opts = [['desc', '最近在前', '时间新 → 旧'], ['asc', '最早在前', '时间旧 → 新']];
+  setModal('按上次使用时间排序', opts.map(([k, label, sub]) =>
+    `<button class="sort-row ${k === plateSort ? 'on' : ''}" onclick="setPlateSort('${k}')"><span>${label}<small>${sub}</small></span><span class="tick">${k === plateSort ? '✓' : ''}</span></button>`).join(''));
+}
+function setPlateSort(k) { plateSort = k === 'asc' ? 'asc' : 'desc'; renderPlates(); closeM(); }
+/* 点码牌 → 编辑:只更新「上次使用方式 + 上次使用时间」,时间默认填当前时间仍可改 */
+function openPlateEdit(id) {
+  const p = getPlate(id); if (!p) return;
+  const w = p.lastWay === 'wx' ? 'wx' : 'ali';   // 默认选中上次方式,新码牌默认支付宝
+  setModal('编辑码牌',
+    `<div class="plate-ctx"><span class="pm ${wayClass(p.lastWay)}">${wayMark(p.lastWay)}</span><div><b>${esc(p.name || '未命名码牌')}</b><small>归属 ${esc(p.owner || '—')}</small></div></div>` +
+    `<label class="field-label">上次使用方式</label>` +
+    `<div class="way-seg" id="wSeg"><button class="ali ${w === 'ali' ? 'on' : ''}" data-w="ali"><span class="dot">支</span>支付宝</button>` +
+    `<button class="wx ${w === 'wx' ? 'on' : ''}" data-w="wx"><span class="dot">微</span>微信</button></div>` +
+    `<label class="field-label">上次使用时间 <span class="hint">默认当前时间，可改</span></label>` +
+    `<input id="pTime" class="modal-input" value="${esc(nowMinute())}" placeholder="2026-08-24 22:14">` +
+    `<button class="primary-action" onclick="savePlateUse(${id})">保存</button>`);
+  document.querySelectorAll('#wSeg button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('#wSeg button').forEach(x => x.classList.remove('on')); b.classList.add('on');
+  });
+}
+async function savePlateUse(id) {
+  const b = document.querySelector('#wSeg button.on');
+  const way = b ? b.dataset.w : 'ali';
+  const t = val('pTime') || nowMinute();
+  await updatePlateUse(id, way, t);
+  renderPlates(); closeM(); toast('已更新');
+}
+/* 设置页:添加码牌(只填名称+归属者)/ 删除码牌 */
+function openAddPlate() {
+  setModal('添加码牌',
+    `<p class="muted" style="margin:-6px 0 10px">新建一个码牌，填名称和归属者即可；使用方式和时间在码牌列表里点开更新。</p>` +
+    `<label class="field-label">码牌名称</label><input id="plName" class="modal-input" placeholder="例如 前台收银码牌">` +
+    `<label class="field-label">归属者</label><input id="plOwner" class="modal-input" placeholder="例如 张三">` +
+    `<button class="primary-action" onclick="saveNewPlate()">保存</button>`);
+}
+async function saveNewPlate() {
+  const name = val('plName'), owner = val('plOwner');
+  if (!name) { toast('请输入码牌名称'); return; }
+  await addPlate({ name, owner });
+  renderPlates(); closeM(); toast('已添加');
+}
+function openPlateManage() {
+  const ps = getPlates();
+  setModal('删除码牌', '<p class="muted" style="margin:-6px 0 10px">删除后该码牌记录会被移除，操作不可撤销。</p>' +
+    (ps.length ? ps.map(p => `<div class="pick-row"><span class="pm ${wayClass(p.lastWay)}" style="width:32px;height:32px;border-radius:9px;font-size:12px">${wayMark(p.lastWay)}</span><span><strong style="font-size:13px">${esc(p.name || '未命名码牌')}</strong><br><span class="muted">归属 ${esc(p.owner || '—')}</span></span><button class="pick-del" onclick="confirmDelPlate(${p.id})">删除</button></div>`).join('') : '<div class="flow-empty">还没有码牌</div>'));
+}
+function confirmDelPlate(id) {
+  const p = getPlate(id); if (!p) return;
+  if (window.confirm(`删除码牌「${p.name || '未命名'}」？`)) {
+    deletePlate(id).then(() => { renderPlates(); openPlateManage(); toast('已删除'); });
+  }
+}
+/* ---------- 页面切换 ---------- */
+function renderAll() { renderHome(); renderCards(); renderPlates(); }
 function go(p) {
   document.querySelectorAll('.page').forEach(x => x.classList.toggle('active', x.dataset.page === p));
-  document.querySelectorAll('.nav-item').forEach((n, i) => n.classList.toggle('active', ['home', 'repayment', 'settings'][i] === p));
+  document.querySelectorAll('.nav-item').forEach((n, i) => n.classList.toggle('active', ['home', 'plates', 'settings'][i] === p));
   document.getElementById('pageTitle').textContent = titles[p];
-  if (p === 'repayment') renderRepayment();
+  if (p === 'plates') renderPlates();
   window.scrollTo(0, 0);
 }
-function selDay(ds) { selectedDate = ds; renderRepayment(); }
-function toToday() { selectedDate = todayStr(); renderRepayment(); }
 /* ---------- 弹层通用 ---------- */
 function show() { document.getElementById('mb').classList.add('show'); }
 function closeM() { document.getElementById('mb').classList.remove('show'); }
@@ -1004,15 +1096,15 @@ function dbSizeText() { try { return Math.round(db.export().byteLength / 1024) +
 function dbCounts() {
   try {
     const count = table => Number(scalar(`SELECT COUNT(*) FROM ${table}`)) || 0;
-    return { cards: count('cards'), transactions: count('transactions'), annualFees: count('annual_fees'), installments: count('installments') };
+    return { cards: count('cards'), transactions: count('transactions'), annualFees: count('annual_fees'), installments: count('installments'), plates: count('plates') };
   } catch (e) {
-    return { cards: 0, transactions: 0, annualFees: 0, installments: 0 };
+    return { cards: 0, transactions: 0, annualFees: 0, installments: 0, plates: 0 };
   }
 }
-function isDbEmpty() { const c = dbCounts(); return !c.cards && !c.transactions && !c.annualFees && !c.installments; }
+function isDbEmpty() { const c = dbCounts(); return !c.cards && !c.transactions && !c.annualFees && !c.installments && !c.plates; }
 function dbSummary() {
   const c = dbCounts();
-  return `${c.cards} 张卡片、${c.transactions} 条流水、${c.annualFees} 条年费记录、${c.installments} 条分期`;
+  return `${c.cards} 张卡片、${c.transactions} 条流水、${c.annualFees} 条年费记录、${c.installments} 条分期、${c.plates} 个码牌`;
 }
 function openSync() {
   const cfg = ghCfg();
@@ -1124,13 +1216,16 @@ function summarizeDb(source) {
     let insts = [];
     try { insts = allFrom(source, 'SELECT cardId,id,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note,feeMode,monthRate FROM installments ORDER BY cardId,id'); }
     catch (e) { insts = []; }   // 老备份没有这张表
+    let plates = [];
+    try { plates = allFrom(source, 'SELECT id,name,owner,lastWay,lastUsedAt FROM plates ORDER BY id'); }
+    catch (e) { plates = []; }  // 老备份没有码牌表
     const totalAvail = cards.reduce((s, c) => s + Number(c.available || 0), 0);
     const lastTx = txs.reduce((m, t) => { const d = String(t.date || ''); return d > m ? d : m; }, '');
     return {
-      ok: true, empty: !cards.length && !txs.length && !afs.length && !insts.length,
-      cards: cards.length, transactions: txs.length, annualFees: afs.length, installments: insts.length,
-      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs, insts }),
-      raw: { cards, txs, afs, insts }
+      ok: true, empty: !cards.length && !txs.length && !afs.length && !insts.length && !plates.length,
+      cards: cards.length, transactions: txs.length, annualFees: afs.length, installments: insts.length, plates: plates.length,
+      totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs, insts, plates }),
+      raw: { cards, txs, afs, insts, plates }
     };
   } catch (e) { return { ok: false }; }
 }
@@ -1170,11 +1265,13 @@ function computeDiffs(L, C) {
   const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率'], ['limitAmount', '影响额度金额', CNY], ['instPeriod', '分期期号']];
   const afFields = [['name', '名称'], ['chargeDate', '收取日'], ['requirement', '要求'], ['status', '状态'], ['note', '备注']];
   const instFields = [['name', '名称'], ['principal', '总本金', CNY], ['periods', '总期数'], ['postedBase', '已入账基线'], ['perPrincipal', '每期本金', CNY], ['perFee', '每期手续费', CNY], ['feeMode', '计息方式', v => v === 'declining' ? '等额本金' : '等本等息'], ['monthRate', '年化利率', v => (Number(v || 0) * 1200).toFixed(2) + '%'], ['startDate', '下次入账日'], ['occupyLimit', '占用额度', v => Number(v) ? '是' : '否'], ['status', '状态'], ['note', '备注']];
+  const plateFields = [['name', '名称'], ['owner', '归属者'], ['lastWay', '上次方式', wayLabel], ['lastUsedAt', '上次时间']];
   return [].concat(
     diffRecords(L.raw.cards, C.raw.cards, r => r.id, c => `#${c.id} ${c.bank || ''}${c.name ? ' ' + c.name : ''}`.trim(), cardFields, '卡片'),
     diffRecords(L.raw.txs, C.raw.txs, r => r.id, t => `#${t.id} ${t.date || ''} ${TXTYPE(t.type)}`.trim(), txFields, '流水'),
     diffRecords(L.raw.afs, C.raw.afs, r => r.cardId + ':' + r.id, f => `卡#${f.cardId} 规则#${f.id}`, afFields, '年费'),
-    diffRecords(L.raw.insts || [], C.raw.insts || [], r => r.cardId + ':' + r.id, n => `卡#${n.cardId} ${n.name || '分期'}`, instFields, '分期')
+    diffRecords(L.raw.insts || [], C.raw.insts || [], r => r.cardId + ':' + r.id, n => `卡#${n.cardId} ${n.name || '分期'}`, instFields, '分期'),
+    diffRecords(L.raw.plates || [], C.raw.plates || [], r => r.id, p => `${p.name || '#' + p.id}`, plateFields, '码牌')
   );
 }
 function renderDiffList(diffs) {
@@ -1196,6 +1293,7 @@ function showSyncConflict(L, C, cloudBytes) {
     conflictRow('流水', L.transactions + ' 条', C.transactions + ' 条') +
     conflictRow('年费记录', L.annualFees + ' 条', C.annualFees + ' 条') +
     conflictRow('分期', (L.installments || 0) + ' 条', (C.installments || 0) + ' 条') +
+    conflictRow('码牌', (L.plates || 0) + ' 个', (C.plates || 0) + ' 个') +
     conflictRow('可用额度合计', money(L.totalAvail), money(C.totalAvail)) +
     conflictRow('最近流水', L.lastTx || '—', C.lastTx || '—');
   const diffs = computeDiffs(L, C);
