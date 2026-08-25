@@ -168,6 +168,15 @@ input,textarea,select{font-size:16px}
 .way-seg button.ali .dot{background:#1677ff}.way-seg button.wx .dot{background:#07c160}
 .field-label .hint{color:#a2abb8;font-weight:400}
 .sort-row small{display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:2px}
+/* 编辑码牌「上次使用时间」:快捷芯片 + 仅「自定义」时展开的原生日期时间选择器 */
+.time-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.time-chips button{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 11px;font-size:12px;font-weight:600;color:var(--ink);cursor:pointer}
+.time-chips button.on{border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}
+/* 字号继承 .modal-input 的 16px,不能改小,否则 iOS 聚焦会放大整页 */
+.modal-input.dt-input{margin-top:8px;border-color:var(--blue);background:var(--blue-soft);color:var(--blue);font-weight:600;max-width:100%}
+.picked-time{display:flex;align-items:center;gap:6px;font-size:12px;color:#59636f;background:#f7f8fa;border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin-top:9px}
+.picked-time b{color:var(--ink);font-size:13px}
+.picked-time span{color:var(--muted)}
 
 /* ---------- 码牌归属名配色 / 逾期还款提醒 / 还款差额(整块追加在文件末尾) ----------
    必须放最后:.pm.n3 和 .plate .pm 的优先级同为 (0,2,0),靠顺序取胜,提前放会被字号覆盖。 */

@@ -44,7 +44,8 @@ function pad(n) { return String(n).padStart(2, '0'); }
 function todayStr() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function nowTime() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function nowStamp() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
-function nowMinute() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtMinute(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function nowMinute() { return fmtMinute(new Date()); }
 function yuan(n) { return '¥' + Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
 function signed(n) { return (n < 0 ? '-' : '+') + '¥' + Math.abs(n).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -758,7 +759,30 @@ function openPlateSort() {
     `<button class="sort-row ${k === plateSort ? 'on' : ''}" onclick="setPlateSort('${k}')"><span>${label}<small>${sub}</small></span><span class="tick">${k === plateSort ? '✓' : ''}</span></button>`).join(''));
 }
 function setPlateSort(k) { plateSort = k === 'asc' ? 'asc' : 'desc'; renderPlates(); closeM(); }
-/* 点码牌 → 编辑:只更新「上次使用方式 + 上次使用时间」,时间默认填当前时间仍可改 */
+/* 点码牌 → 编辑:只更新「上次使用方式 + 上次使用时间」
+   时间不用手打:快捷芯片二选一,只有「自定义」才展开原生 datetime-local(iPhone 弹系统滚轮) */
+const PLATE_TIME_MODES = [['now', '现在'], ['h1', '1小时前'], ['d1', '昨天'], ['d2', '前天'], ['custom', '自定义…']];
+function toLocalInput(stamp) { return String(stamp || '').replace(' ', 'T').slice(0, 16); }
+function fromLocalInput(v) {
+  const s = String(v || '').replace('T', ' ').slice(0, 16);
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(s) ? s : '';   // 空值/半截值一律作废,回落到「现在」
+}
+function plateTimeMode() { const b = document.querySelector('#ptChips button.on'); return b ? b.dataset.m : 'now'; }
+/* 相对时间每次现算:setHours/setDate 自带跨天跨月跨年进位 */
+function plateStampFor(mode) {
+  if (mode === 'custom') return fromLocalInput(val('pTime')) || nowMinute();
+  const d = new Date();
+  if (mode === 'h1') d.setHours(d.getHours() - 1);
+  else if (mode === 'd1') d.setDate(d.getDate() - 1);
+  else if (mode === 'd2') d.setDate(d.getDate() - 2);
+  return fmtMinute(d);
+}
+function syncPlateTime() {
+  const prev = document.getElementById('ptPrev'); if (!prev) return;
+  const m = plateTimeMode();
+  const label = { now: '现在', h1: '1 小时前', d1: '昨天', d2: '前天', custom: '自定义' }[m] || '';
+  prev.innerHTML = `已选 <b>${esc(plateStampFor(m))}</b><span>${esc(label)}</span>`;
+}
 function openPlateEdit(id) {
   const p = getPlate(id); if (!p) return;
   const w = p.lastWay === 'wx' ? 'wx' : 'ali';   // 默认选中上次方式,新码牌默认支付宝
@@ -767,17 +791,32 @@ function openPlateEdit(id) {
     `<label class="field-label">上次使用方式</label>` +
     `<div class="way-seg" id="wSeg"><button class="ali ${w === 'ali' ? 'on' : ''}" data-w="ali"><span class="dot">支</span>支付宝</button>` +
     `<button class="wx ${w === 'wx' ? 'on' : ''}" data-w="wx"><span class="dot">微</span>微信</button></div>` +
-    `<label class="field-label">上次使用时间 <span class="hint">默认当前时间，可改</span></label>` +
-    `<input id="pTime" class="modal-input" value="${esc(nowMinute())}" placeholder="2026-08-24 22:14">` +
+    `<label class="field-label">上次使用时间 <span class="hint">默认现在，点一下就改</span></label>` +
+    `<div class="time-chips" id="ptChips">` +
+    PLATE_TIME_MODES.map(([m, t]) => `<button class="${m === 'now' ? 'on' : ''}" data-m="${m}">${t}</button>`).join('') +
+    `</div>` +
+    `<input id="pTime" class="modal-input dt-input" type="datetime-local" value="${esc(toLocalInput(nowMinute()))}" style="display:none">` +
+    `<div class="picked-time" id="ptPrev"></div>` +
     `<button class="primary-action" onclick="savePlateUse(${id})">保存</button>`);
   document.querySelectorAll('#wSeg button').forEach(b => b.onclick = () => {
     document.querySelectorAll('#wSeg button').forEach(x => x.classList.remove('on')); b.classList.add('on');
   });
+  const inp = document.getElementById('pTime');
+  document.querySelectorAll('#ptChips button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('#ptChips button').forEach(x => x.classList.remove('on')); b.classList.add('on');
+    const custom = b.dataset.m === 'custom';
+    inp.style.display = custom ? '' : 'none';
+    // 选「自定义」直接把系统滚轮唤起来,少点一次;老浏览器没有 showPicker 就退回聚焦
+    if (custom) { try { inp.showPicker(); } catch (e) { try { inp.focus(); } catch (e2) { } } }
+    syncPlateTime();
+  });
+  inp.onchange = syncPlateTime;
+  syncPlateTime();
 }
 async function savePlateUse(id) {
   const b = document.querySelector('#wSeg button.on');
   const way = b ? b.dataset.w : 'ali';
-  const t = val('pTime') || nowMinute();
+  const t = plateStampFor(plateTimeMode()) || nowMinute();   // 保存这一刻再算,弹层开久了「现在」也不会停在旧分钟
   await updatePlateUse(id, way, t);
   renderPlates(); closeM(); toast('已更新');
 }
