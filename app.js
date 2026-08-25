@@ -1316,11 +1316,40 @@ function openSync() {
     (connected ? `<button class="primary-action" onclick="doSync()">立即备份并同步</button><button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doPull()">从云端恢复</button>` : `<button class="primary-action" onclick="openBackupCfg()">去配置备份</button>`) +
     `<p class="auth-note" style="color:var(--muted);margin-top:16px">自动同步只在网页打开且联网时运行。连续修改会合并后同步；多台设备同时编辑时，以最后一次成功同步为准。令牌只保存在本机。</p>`);
 }
-async function ghRequest(cfg, method, extra) {
+async function ghRequest(cfg, method, extra, accept) {
   const url = `https://api.github.com/repos/${cfg.user}/${cfg.repo}/contents/ledger.db`;
-  const opt = { method, headers: { Authorization: 'Bearer ' + cfg.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } };
+  const opt = { method, headers: { Authorization: 'Bearer ' + cfg.token, Accept: accept || 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } };
   if (extra) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(extra); }
   return fetch(url, opt);
+}
+/* SQLite 文件头恒为 "SQLite format 3\0"。拿它当「取回来的到底是不是数据库」的判据,
+   比事后猜「为什么解析不了」可靠得多。 */
+function looksLikeSqlite(bytes) {
+  const magic = 'SQLite format 3';
+  if (!bytes || bytes.length < 16) return false;
+  for (let i = 0; i < magic.length; i++) if (bytes[i] !== magic.charCodeAt(i)) return false;
+  return true;
+}
+/* 取云端数据库的原始字节。
+   踩过的坑:GitHub Contents API 默认的 JSON 形式只对 1MB 以内的文件返回 base64 content,
+   超过 1MB 时 content 变成空字符串、encoding 变成 "none",而 PUT 上传并不受这个限制。
+   于是表现成「刚刚同步成功,一打开却说云端数据无法解析」——库一过 1MB 就必现,
+   而且备份其实是好的,只是读不回来。官方指定解法是改用 raw 媒体类型直接取文件本体,
+   顺带省掉 base64 那 33% 的流量。仍保留 JSON+base64 回退,防中间层把 Accept 改回去。 */
+async function ghFetchDbBytes(cfg) {
+  const r = await ghRequest(cfg, 'GET', null, 'application/vnd.github.raw+json');
+  if (r.status === 404) return { status: 404 };
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const raw = new Uint8Array(await r.arrayBuffer());
+  if (looksLikeSqlite(raw)) return { status: 200, bytes: raw };
+  let j = null;
+  try { j = JSON.parse(new TextDecoder().decode(raw)); } catch (e) { j = null; }
+  if (j && typeof j.content === 'string' && j.content) {
+    const b = b64ToBytes(j.content.replace(/\s/g, ''));
+    if (looksLikeSqlite(b)) return { status: 200, bytes: b };
+  }
+  if (j && j.encoding === 'none') throw new Error('云端备份 ' + Math.round(Number(j.size || 0) / 1024) + 'KB 超出接口 1MB 上限,且 raw 方式未生效');
+  throw new Error('取回的不是数据库文件(' + raw.length + ' 字节)');
 }
 function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
   if (!dirty || !ghReady()) return;
@@ -1343,7 +1372,9 @@ async function doSync(options = {}) {
   if (st) st.textContent = '同步中…';
   try {
     let sha;
-    const head = await ghRequest(cfg, 'GET');
+    /* 只要 sha,用 object 媒体类型:它对超过 1MB 的文件也照常返回 sha(只是 content 为空),
+       比默认 JSON 稳。拿不到 sha 会导致 PUT 被 GitHub 拒(缺 sha),备份就断了。 */
+    const head = await ghRequest(cfg, 'GET', null, 'application/vnd.github.object+json');
     if (head.ok) { const j = await head.json(); sha = j.sha; }
     const body = { message: '备份账务数据 ' + nowStamp(), content: bytesToB64(db.export()) };
     if (sha) body.sha = sha;
@@ -1370,11 +1401,10 @@ async function pullFromCloud(options = {}) {
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '恢复中…';
   try {
-    const r = await ghRequest(cfg, 'GET');
-    if (automatic && r.status === 404) { if (isDbEmpty()) toast('云端还没有备份:请在有数据的设备点「立即备份并同步」'); return false; }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    const bytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
+    const got = await ghFetchDbBytes(cfg);
+    if (automatic && got.status === 404) { if (isDbEmpty()) toast('云端还没有备份:请在有数据的设备点「立即备份并同步」'); return false; }
+    if (got.status === 404) throw new Error('云端还没有备份文件');
+    const bytes = got.bytes;
     const localBytes = db.export();
     const localCounts = dbCounts();
     loadBytesIntoDb(bytes);
@@ -1427,7 +1457,7 @@ function summarizeDb(source) {
       totalAvail, lastTx, canon: JSON.stringify({ cards, txs, afs, insts, plates }),
       raw: { cards, txs, afs, insts, plates }
     };
-  } catch (e) { return { ok: false }; }
+  } catch (e) { return { ok: false, err: e.message }; }
 }
 let pendingCloudBytes = null;
 function conflictRow(label, l, c) {
@@ -1529,21 +1559,22 @@ async function syncOnOpen() {
   const cfg = ghCfg();
   let cloudBytes;
   try {
-    const r = await ghRequest(cfg, 'GET');
-    if (r.status === 404) {
+    const got = await ghFetchDbBytes(cfg);
+    if (got.status === 404) {
       // 云端还没有备份:本机有数据就直接上传建立首份备份
       if (!isDbEmpty()) { await doSync({ automatic: true }); }
       return;
     }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    cloudBytes = b64ToBytes(String(j.content || '').replace(/\n/g, ''));
+    cloudBytes = got.bytes;
   } catch (e) { toast('云端同步失败:' + e.message + '(继续用本机数据)'); return; }
   const local = summarizeDb(db);
   let cloud; let cdb;
-  try { cdb = new SQL.Database(cloudBytes); cloud = summarizeDb(cdb); } catch (e) { cloud = { ok: false }; }
+  /* 云端那份可能是旧版本设备备份的,表结构比现在少列(比如分期的 feeMode/monthRate)。
+     临时库先跑一遍 migrate 再读,否则查询会报 no such column,又被当成「无法解析」。
+     cdb 只活在内存里,close 掉就没了,不会改动云端文件。 */
+  try { cdb = new SQL.Database(cloudBytes); migrate(cdb); cloud = summarizeDb(cdb); } catch (e) { cloud = { ok: false, err: e.message }; }
   finally { if (cdb) cdb.close(); }
-  if (!cloud.ok) { toast('云端数据无法解析,继续用本机数据'); return; }
+  if (!cloud.ok) { toast('云端数据无法解析:' + (cloud.err || '未知原因') + ',继续用本机数据'); return; }
   if (cloud.empty && !local.empty) { toast('云端备份为空,已保留本机数据(将自动上传)'); setDirty(true); scheduleAutoSync(500); return; }
   if (local.empty) {
     // 本机无数据:无需询问,直接用云端

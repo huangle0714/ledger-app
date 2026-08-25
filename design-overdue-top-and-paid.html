@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>账务管家 · 设计稿：逾期卡片置顶 / 逾期弹窗「已还款」</title>
+<style>
+*{box-sizing:border-box}
+:root{--bg:#f5f7fb;--surface:#fff;--ink:#192231;--muted:#7c8798;--line:#e8ecf2;--blue:#3977ee;--blue-soft:#eaf1ff;--green:#23a77a;--orange:#e99538;--red:#df5d67}
+body{margin:0;background:#eef1f6;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:940px;margin:0 auto;padding:26px 16px 60px}
+.wrap>h1{font-size:22px;margin:0 0 6px}
+.lead{font-size:13px;color:#5b6676;line-height:1.7;margin:0 0 26px}
+.sec{background:#fff;border:1px solid #e2e7ef;border-radius:18px;padding:18px;margin-bottom:22px}
+.sec-h{font-size:16px;font-weight:800;margin:0 0 4px}
+.sec-q{font-size:12px;color:var(--muted);line-height:1.7;margin:0 0 16px}
+.sec-q em{font-style:normal;color:#c7525b;font-weight:700}
+.note{font-size:12px;color:#5b6676;line-height:1.8;margin:14px 0 0;padding:12px 13px;background:#f7f9fc;border:1px solid var(--line);border-radius:12px}
+.note b{color:var(--ink)}
+.note code{background:#eef2f8;border-radius:4px;padding:1px 5px;font-size:11px;font-family:ui-monospace,Menlo,monospace}
+.ask{font-size:12px;line-height:1.8;margin:14px 0 0;padding:12px 13px;background:#fffaf1;border:1px solid #f2e0c2;border-radius:12px;color:#6b5836}
+.ask b{color:#4a3c1f}
+.row2{display:flex;flex-wrap:wrap;gap:18px}
+.col{flex:0 0 auto}
+.tag{display:inline-block;font-size:10px;font-weight:800;padding:3px 9px;border-radius:7px;margin-bottom:9px}
+.tag.now{background:#f0f2f5;color:#8993a2}
+.tag.new{background:var(--blue-soft);color:var(--blue)}
+.tag.alt{background:#f0ebff;color:#8060cb}
+.mock{width:390px;max-width:100%;padding:16px;background:var(--bg);border:1px solid #dfe4ec;border-radius:16px}
+.section-heading{display:flex;align-items:center;justify-content:space-between;margin:0 2px 11px}
+.section-heading>div{display:flex;flex-direction:column}
+.eyebrow{font-size:10px;color:var(--muted);letter-spacing:.16em;text-transform:uppercase;margin:0 0 3px}
+.section-heading h2{font-size:15px;margin:0}
+.sort-trigger{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:5px 10px;font-size:11px;font-weight:600;color:var(--ink)}
+/* ==== 与线上 styles.css 一致的卡片样式(照抄,便于判断真实观感) ==== */
+.card-list{display:flex;flex-direction:column;gap:10px}
+.card-item{display:flex;flex-direction:column;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:13px 14px;box-shadow:0 4px 12px rgba(31,50,80,.035);text-align:left;width:100%}
+.card-top{display:flex;align-items:center;gap:12px}
+.bank-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:13px;font-weight:800;color:#fff;flex:0 0 auto}
+.bank-mark.blue{background:#3d76dc}.bank-mark.orange{background:#ed9a3d}.bank-mark.purple{background:#8b67d8}.bank-mark.teal{background:#27a992}.bank-mark.red{background:#dc626c}
+.card-main{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}
+.card-name{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px}
+.card-sub{font-size:11px;color:var(--muted)}
+.card-right{text-align:right;display:flex;flex-direction:column;gap:3px;min-width:0}
+.card-avail{font-size:13px;font-weight:700;color:var(--green)}
+.card-amount{font-size:12px;font-weight:600;color:#54606e}
+.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}.card-due.late{color:#c8323f;font-weight:700}
+.card-bill{font-size:10px;color:var(--muted)}
+.card-item.overdue{border-color:#e79aa1;background:#fff1f2;box-shadow:0 4px 14px rgba(223,93,103,.2)}
+.late-badge{font-size:9px;font-weight:800;color:#fff;background:#c8323f;border-radius:6px;padding:2px 7px;margin-left:6px}
+.chevron{font-size:21px;color:#a8b1bf}
+/* ==== 弹窗 ==== */
+.sheet{width:390px;max-width:100%;background:#fff;border:1px solid #dfe4ec;border-radius:18px;padding:16px;box-shadow:0 12px 30px rgba(31,50,80,.1)}
+.sheet-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.sheet-h h2{font-size:15px;margin:0}
+.sheet-h .x{font-size:20px;color:#a8b1bf}
+.due-lead{font-size:12px;line-height:1.6;color:var(--muted);margin:-2px 0 10px}
+.due-list{display:flex;flex-direction:column;gap:8px}
+.due-item{display:flex;align-items:flex-start;gap:10px;border:1px solid #f0b3b8;background:#fff6f6;border-radius:13px;padding:11px 12px}
+.due-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.due-name{font-size:13px;font-weight:800;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.due-badge{font-style:normal;font-size:9px;font-weight:800;color:#fff;background:#c8323f;border-radius:6px;padding:2px 6px}
+.due-meta{font-size:11px;color:var(--muted);line-height:1.5}
+.due-right{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:2px}
+.due-amt{font-size:15px;font-weight:800;color:#c8323f}
+.due-sub{font-size:10px;color:var(--muted)}
+.due-total{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:11px 12px;background:#f7f8fa;border:1px solid var(--line);border-radius:13px;font-size:12px;color:var(--muted)}
+.due-total strong{font-size:15px;color:#c8323f}
+.secondary-action{width:100%;border:1px solid #f1caca;background:#fff7f7;color:#c7525b;border-radius:12px;padding:12px;font-size:13px;font-weight:700;margin-top:9px}
+/* ==== 新增:勾选框与主按钮 ==== */
+.due-pick{flex:0 0 auto;width:22px;height:22px;margin-top:1px;border-radius:50%;border:1.5px solid #d9b3b7;background:#fff;display:grid;place-items:center;font-size:12px;font-weight:800;color:transparent}
+.due-pick.on{background:#c8323f;border-color:#c8323f;color:#fff}
+.due-item.picked{border-color:#c8323f;background:#fff0f1;box-shadow:0 3px 10px rgba(200,50,63,.12)}
+.pick-all{border:1px solid var(--line);background:#fff;border-radius:9px;padding:5px 10px;font-size:11px;font-weight:700;color:#59636f}
+.paid-btn{width:100%;border:0;border-radius:12px;padding:13px;font-size:14px;font-weight:800;color:#fff;background:#c8323f;margin-top:12px;box-shadow:0 6px 16px rgba(200,50,63,.22)}
+.paid-btn.off{background:#e6e9ef;color:#a3abb8;box-shadow:none}
+.grp-h{display:flex;align-items:center;gap:8px;margin:2px 2px 8px;font-size:11px;font-weight:800;color:#c8323f}
+.grp-h i{flex:1;height:1px;background:#f0c3c7;font-style:normal}
+.flow{font-size:12px;line-height:1.9;margin:12px 0 0;padding:12px 13px;background:#f4f8ff;border:1px solid #d9e6fb;border-radius:12px;color:#3c5473}
+.flow b{color:#1f3a5f}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>设计稿：逾期卡片置顶 + 逾期弹窗「已还款」</h1>
+<p class="lead">两件事：<b>一是把逾期的卡片挪到卡片列表最前面</b>，<b>二是逾期提醒里能勾选多张卡、一键记成已还款</b>。下面每块都是「现在」对「改成」，看完确认了我再动正式页面。图里的银行名、金额、尾号全是编的。</p>
+<section class="sec">
+<h2 class="sec-h">一、逾期卡片置顶</h2>
+<p class="sec-q">现在逾期卡只是标红，位置还在原来的排序里，<em>要往下翻才看得到</em>。改成不管当前按什么排序，逾期的一律排在最前面。</p>
+<div class="row2">
+<div class="col">
+<span class="tag now">现在（按还款日排序）</span>
+<div class="mock">
+<div class="section-heading"><div><p class="eyebrow">已绑定账户</p><h2>我的卡片</h2></div><span class="sort-trigger">排序：还款日 ⌄</span></div>
+<div class="card-list">
+<div class="card-item"><span class="card-top"><span class="bank-mark blue">示例</span><span class="card-main"><strong class="card-name">示例银行</strong><span class="card-sub">张三 · 普卡 · 尾号 1234</span></span><span class="card-right"><strong class="card-avail">可用 ¥8,000</strong><span class="card-amount">已用 ¥2,000</span><span class="card-due">还款 2026-09-05 · 待还款</span><span class="card-bill">账单 20</span></span><span class="chevron">›</span></span></div>
+<div class="card-item overdue"><span class="card-top"><span class="bank-mark orange">演示</span><span class="card-main"><strong class="card-name">演示银行<span class="late-badge">逾期 6 天</span></strong><span class="card-sub">张三 · 金卡 · 尾号 5678</span></span><span class="card-right"><strong class="card-avail">可用 ¥12,000</strong><span class="card-amount">已用 ¥8,000</span><span class="card-due late">还款 2026-08-19 · 还差 ¥8,000</span><span class="card-bill">账单 5</span></span><span class="chevron">›</span></span></div>
+<div class="card-item"><span class="card-top"><span class="bank-mark teal">样例</span><span class="card-main"><strong class="card-name">样例银行</strong><span class="card-sub">李四 · 白金 · 尾号 9012</span></span><span class="card-right"><strong class="card-avail">可用 ¥30,000</strong><span class="card-amount">已用 ¥0</span><span class="card-due ok">还款 2026-09-12 · 已还清</span><span class="card-bill">账单 28</span></span><span class="chevron">›</span></span></div>
+<div class="card-item overdue"><span class="card-top"><span class="bank-mark purple">测试</span><span class="card-main"><strong class="card-name">测试银行<span class="late-badge">逾期 21 天</span></strong><span class="card-sub">李四 · 普卡 · 尾号 3456</span></span><span class="card-right"><strong class="card-avail">可用 ¥1,000</strong><span class="card-amount">已用 ¥4,000</span><span class="card-due late">还款 2026-08-04 · 还差 ¥4,000</span><span class="card-bill">账单 18</span></span><span class="chevron">›</span></span></div>
+</div>
+</div>
+</div>
+<div class="col">
+<span class="tag new">改成（推荐：不加小标题）</span>
+<div class="mock">
+<div class="section-heading"><div><p class="eyebrow">已绑定账户</p><h2>我的卡片</h2></div><span class="sort-trigger">排序：还款日 ⌄</span></div>
+<div class="card-list">
+<div class="card-item overdue"><span class="card-top"><span class="bank-mark purple">测试</span><span class="card-main"><strong class="card-name">测试银行<span class="late-badge">逾期 21 天</span></strong><span class="card-sub">李四 · 普卡 · 尾号 3456</span></span><span class="card-right"><strong class="card-avail">可用 ¥1,000</strong><span class="card-amount">已用 ¥4,000</span><span class="card-due late">还款 2026-08-04 · 还差 ¥4,000</span><span class="card-bill">账单 18</span></span><span class="chevron">›</span></span></div>
+<div class="card-item overdue"><span class="card-top"><span class="bank-mark orange">演示</span><span class="card-main"><strong class="card-name">演示银行<span class="late-badge">逾期 6 天</span></strong><span class="card-sub">张三 · 金卡 · 尾号 5678</span></span><span class="card-right"><strong class="card-avail">可用 ¥12,000</strong><span class="card-amount">已用 ¥8,000</span><span class="card-due late">还款 2026-08-19 · 还差 ¥8,000</span><span class="card-bill">账单 5</span></span><span class="chevron">›</span></span></div>
+<div class="card-item"><span class="card-top"><span class="bank-mark blue">示例</span><span class="card-main"><strong class="card-name">示例银行</strong><span class="card-sub">张三 · 普卡 · 尾号 1234</span></span><span class="card-right"><strong class="card-avail">可用 ¥8,000</strong><span class="card-amount">已用 ¥2,000</span><span class="card-due">还款 2026-09-05 · 待还款</span><span class="card-bill">账单 20</span></span><span class="chevron">›</span></span></div>
+<div class="card-item"><span class="card-top"><span class="bank-mark teal">样例</span><span class="card-main"><strong class="card-name">样例银行</strong><span class="card-sub">李四 · 白金 · 尾号 9012</span></span><span class="card-right"><strong class="card-avail">可用 ¥30,000</strong><span class="card-amount">已用 ¥0</span><span class="card-due ok">还款 2026-09-12 · 已还清</span><span class="card-bill">账单 28</span></span><span class="chevron">›</span></span></div>
+</div>
+</div>
+</div>
+<div class="col">
+<span class="tag alt">备选（加一条「逾期 2 张」小标题）</span>
+<div class="mock">
+<div class="section-heading"><div><p class="eyebrow">已绑定账户</p><h2>我的卡片</h2></div><span class="sort-trigger">排序：还款日 ⌄</span></div>
+<div class="grp-h">逾期 2 张 · 共 ¥12,000<i></i></div>
+<div class="card-list" style="margin-bottom:12px">
+<div class="card-item overdue"><span class="card-top"><span class="bank-mark purple">测试</span><span class="card-main"><strong class="card-name">测试银行<span class="late-badge">逾期 21 天</span></strong><span class="card-sub">李四 · 普卡 · 尾号 3456</span></span><span class="card-right"><strong class="card-avail">可用 ¥1,000</strong><span class="card-amount">已用 ¥4,000</span><span class="card-due late">还款 2026-08-04 · 还差 ¥4,000</span><span class="card-bill">账单 18</span></span><span class="chevron">›</span></span></div>
+<div class="card-item overdue"><span class="card-top"><span class="bank-mark orange">演示</span><span class="card-main"><strong class="card-name">演示银行<span class="late-badge">逾期 6 天</span></strong><span class="card-sub">张三 · 金卡 · 尾号 5678</span></span><span class="card-right"><strong class="card-avail">可用 ¥12,000</strong><span class="card-amount">已用 ¥8,000</span><span class="card-due late">还款 2026-08-19 · 还差 ¥8,000</span><span class="card-bill">账单 5</span></span><span class="chevron">›</span></span></div>
+</div>
+<div class="grp-h" style="color:#8993a2">其它 2 张<i style="background:#e8ecf2"></i></div>
+<div class="card-list">
+<div class="card-item"><span class="card-top"><span class="bank-mark blue">示例</span><span class="card-main"><strong class="card-name">示例银行</strong><span class="card-sub">张三 · 普卡 · 尾号 1234</span></span><span class="card-right"><strong class="card-avail">可用 ¥8,000</strong><span class="card-amount">已用 ¥2,000</span><span class="card-due">还款 2026-09-05 · 待还款</span><span class="card-bill">账单 20</span></span><span class="chevron">›</span></span></div>
+<div class="card-item"><span class="card-top"><span class="bank-mark teal">样例</span><span class="card-main"><strong class="card-name">样例银行</strong><span class="card-sub">李四 · 白金 · 尾号 9012</span></span><span class="card-right"><strong class="card-avail">可用 ¥30,000</strong><span class="card-amount">已用 ¥0</span><span class="card-due ok">还款 2026-09-12 · 已还清</span><span class="card-bill">账单 28</span></span><span class="chevron">›</span></span></div>
+</div>
+</div>
+</div>
+</div>
+<p class="note"><b>规则</b><br>
+1. 四种排序（默认 / 持卡人 / 账单日 / 还款日）都置顶，<b>逾期组内部按逾期天数从多到少</b>，最急的在最上面。<br>
+2. 非逾期的那些卡<b>相对顺序一点不变</b>——只是整体往下挪，你现在习惯的顺序不会被打乱。<br>
+3. 逾期判据沿用现有那套（<code>overdueInfo</code>），所以列表里的红框、<b>逾期 N 天</b> 和登录后的弹窗永远说的是同一批卡，不会一个说逾期一个说没事。<br>
+4. 判一张卡逾期要翻它的流水，置顶后排序和渲染各要翻一遍。加个「同一天只算一次」的小缓存，改完打开页面不会变慢。</p>
+<p class="ask"><b>要你定一件事：</b>用推荐版（只置顶、不加小标题，省高度、红框已经够显眼），还是备选版（多一条「逾期 2 张 · 共 ¥X」的分组标题，代价是列表多占约 22px 高）？</p>
+</section>
+<section class="sec">
+<h2 class="sec-h">二、逾期提醒里加「已还款」（可多选）</h2>
+<p class="sec-q">现在弹窗里点一行只能跳去那张卡自己记还款，<em>几张卡就得来回跳几趟</em>。改成左边多一个勾选圈，勾上几张，底下一个按钮就把它们都记成已还款。</p>
+<div class="row2">
+<div class="col">
+<span class="tag now">现在</span>
+<div class="sheet">
+<div class="sheet-h"><h2>2 张卡要还款</h2><span class="x">×</span></div>
+<p class="due-lead">这 2 张都过了还款日、还没记到够数的还款。右边是「还差多少」。点卡片可以直接记这笔还款。</p>
+<div class="due-list">
+<div class="due-item"><span class="due-main"><span class="due-name">测试银行<i class="due-badge">逾期 21 天</i></span><span class="due-meta">还款日 08-04 · 一直没记还款</span><span class="due-meta">普卡 · 尾号 3456</span></span><span class="due-right"><strong class="due-amt">¥4,000</strong><span class="due-sub">本期应还</span></span></div>
+<div class="due-item"><span class="due-main"><span class="due-name">演示银行<i class="due-badge">逾期 6 天</i></span><span class="due-meta">还款日 08-19 · 已还 ¥2,000，还差这些</span><span class="due-meta">金卡 · 尾号 5678</span></span><span class="due-right"><strong class="due-amt">¥8,000</strong><span class="due-sub">应还 ¥10,000</span></span></div>
+</div>
+<div class="due-total"><span>加起来还要还</span><strong>¥12,000</strong></div>
+<div class="secondary-action">稍后还款（今天不再提醒）</div>
+</div>
+</div>
+<div class="col">
+<span class="tag new">改成</span>
+<div class="sheet">
+<div class="sheet-h"><h2>2 张卡要还款</h2><span class="pick-all">全选</span></div>
+<p class="due-lead">勾上已经还掉的卡，点下面的按钮就按「还差多少」记一笔还款。点卡片名字那一片，还是照旧跳进卡片里自己记。</p>
+<div class="due-list">
+<div class="due-item picked"><span class="due-pick on">✓</span><span class="due-main"><span class="due-name">测试银行<i class="due-badge">逾期 21 天</i></span><span class="due-meta">还款日 08-04 · 一直没记还款</span><span class="due-meta">普卡 · 尾号 3456</span></span><span class="due-right"><strong class="due-amt">¥4,000</strong><span class="due-sub">本期应还</span></span></div>
+<div class="due-item"><span class="due-pick">✓</span><span class="due-main"><span class="due-name">演示银行<i class="due-badge">逾期 6 天</i></span><span class="due-meta">还款日 08-19 · 已还 ¥2,000，还差这些</span><span class="due-meta">金卡 · 尾号 5678</span></span><span class="due-right"><strong class="due-amt">¥8,000</strong><span class="due-sub">应还 ¥10,000</span></span></div>
+</div>
+<div class="due-total"><span>加起来还要还</span><strong>¥12,000</strong></div>
+<div class="paid-btn">已还款 · 记 1 笔 ¥4,000</div>
+<div class="secondary-action">稍后还款（今天不再提醒）</div>
+</div>
+</div>
+<div class="col">
+<span class="tag alt">一张都没勾时</span>
+<div class="sheet">
+<div class="sheet-h"><h2>2 张卡要还款</h2><span class="pick-all">全选</span></div>
+<p class="due-lead">勾上已经还掉的卡，点下面的按钮就按「还差多少」记一笔还款。点卡片名字那一片，还是照旧跳进卡片里自己记。</p>
+<div class="due-list">
+<div class="due-item"><span class="due-pick">✓</span><span class="due-main"><span class="due-name">测试银行<i class="due-badge">逾期 21 天</i></span><span class="due-meta">还款日 08-04 · 一直没记还款</span><span class="due-meta">普卡 · 尾号 3456</span></span><span class="due-right"><strong class="due-amt">¥4,000</strong><span class="due-sub">本期应还</span></span></div>
+<div class="due-item"><span class="due-pick">✓</span><span class="due-main"><span class="due-name">演示银行<i class="due-badge">逾期 6 天</i></span><span class="due-meta">还款日 08-19 · 已还 ¥2,000，还差这些</span><span class="due-meta">金卡 · 尾号 5678</span></span><span class="due-right"><strong class="due-amt">¥8,000</strong><span class="due-sub">应还 ¥10,000</span></span></div>
+</div>
+<div class="due-total"><span>加起来还要还</span><strong>¥12,000</strong></div>
+<div class="paid-btn off">已还款（先勾选卡片）</div>
+<div class="secondary-action">稍后还款（今天不再提醒）</div>
+</div>
+</div>
+</div>
+<p class="flow"><b>点下「已还款」之后到底发生什么</b><br>
+· 每张勾选的卡各记<b>一笔还款</b>：金额＝界面上那个「还差多少」，日期＝<b>今天</b>，备注「还款」。<br>
+· 和你自己进卡片手动记一笔<b>完全一样</b>：可用额度照样加回去，流水里看得到，记错了进卡片删掉就行。<br>
+· 金额正好等于还差，<b>不会拆出「还款差额」</b>那一笔。<br>
+· 记完这几张就不算逾期了：弹窗只留下没勾的那些；全还完就自动关掉，提示「已记 2 笔还款」。<br>
+· 卡片列表里对应的红框、置顶也跟着一起消失，不用手动刷新。</p>
+<p class="note"><b>操作上的分工</b>：勾选圈那 22px 只管选中／取消，行里其它地方点下去还是跳卡片（现有习惯不变）。<b>右上「全选」</b>点一下全勾、再点一下全不勾。</p>
+<p class="ask"><b>要你定两件事：</b><br>
+1. 打开弹窗时<b>默认一张都不勾</b>（推荐，按钮是灰的，误触也写不进数据），还是<b>默认全勾上</b>（还完了的话一下就能点，但手滑就会真的记进去）？<br>
+2. 按钮文案用「<b>已还款 · 记 1 笔 ¥4,000</b>」（带笔数和金额，点之前心里有数），还是简短的「<b>标记已还款（1）</b>」？</p>
+</section>
+</div>
+</body>
+</html>
