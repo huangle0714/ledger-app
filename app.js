@@ -19,6 +19,13 @@ const titles = { home: '总览', cards: '我的卡片', plates: '码牌', settin
 
 let SQL = null;      // sql.js 模块
 let db = null;       // 当前数据库
+/* modify by huangle 日期:2026-08-25 打开数据库这件事本身要能被等待
+   boot() 是异步的又没人 await,以前输密码够快就会在 openDatabase() 还没跑完时进主界面,
+   接着 syncOnOpen() 拿 SQL=null 去 new SQL.Database,报「null is not an object」,
+   还被 summarizeDb 的 try/catch 吞成「云端数据无法解析」——其实云端好得很。 */
+let bootDone = null; // boot() 那一次的 Promise(它内部吞了异常,await 完看 db/bootErr 就知道成没成)
+let bootErr = '';    // 初始化失败的真实原因,登录界面和 toast 都要能说出来
+let loggingIn = false; // 正在等库打开,挡住重复登录
 let sortKey = 'repayDay';
 let plateSort = 'desc';   // 码牌按上次使用时间:desc=最近在前(默认), asc=最早在前
 let plateFilter = 'all';  // all / ali(支付宝) / wx(微信)
@@ -163,8 +170,19 @@ function seedFrom(data) {
   db.exec('COMMIT');
 }
 
+/* modify by huangle 日期:2026-08-25 sql.js 加载失败重试一次
+   wasm 有 640KB,手机弱网时这一下偶尔就断了;断了以后 SQL 恒为 null,
+   界面看着是空账本、还会误报云端问题,所以宁可多等半秒重来一次。 */
+async function loadSqlJs() {
+  if (typeof initSqlJs !== 'function') throw new Error('sql.js 没加载成功(vendor/sql-wasm.js)');
+  try { return await initSqlJs({ locateFile: f => './vendor/' + f }); }
+  catch (e) {
+    await new Promise(r => setTimeout(r, 600));
+    return await initSqlJs({ locateFile: f => './vendor/' + f });
+  }
+}
 async function openDatabase() {
-  SQL = await initSqlJs({ locateFile: f => './vendor/' + f });
+  SQL = await loadSqlJs();
   const saved = await idbGet(DB_KEY);
   if (saved && saved.byteLength) {
     db = new SQL.Database(new Uint8Array(saved));
@@ -1317,12 +1335,29 @@ function confirmDelCard(id) {
 async function sha(s) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''); }
 async function ensureDefaultPass() { if (!localStorage.getItem(PASS_KEY)) localStorage.setItem(PASS_KEY, await sha(DEFAULT_PASS)); }
 async function tryLogin() {
+  /* modify by huangle 日期:2026-08-25 等库的这几百毫秒里连点两次登录,会进两回主界面、同步也跑两遍 */
+  if (loggingIn) return;
+  loggingIn = true;
+  try { await doLogin(); } finally { loggingIn = false; }
+}
+async function doLogin() {
   const input = document.getElementById('authInput').value;
   const err = document.getElementById('authErr');
   if (!input) { err.textContent = '请输入密码'; return; }
   const ok = (await sha(input)) === localStorage.getItem(PASS_KEY);
   if (!ok) { err.textContent = '密码不正确'; return; }
   err.textContent = '';
+  /* modify by huangle 日期:2026-08-25 数据库没打开就别放人进去
+     以前密码对了就直接进,库还在加载时进去看到的是「¥0、一张卡都没有」,
+     还会顺带误报云端解析失败;真打不开也要在这儿把原因说清楚。 */
+  if (!db) {
+    err.style.color = '#59636f';
+    err.textContent = '正在打开本机数据,请稍候…';
+    const ready = await whenDbReady();
+    err.style.color = '';
+    if (!ready) { err.textContent = '本机数据打不开:' + (bootErr || '未知原因') + ',请刷新页面重试'; return; }
+    err.textContent = '';
+  }
   document.getElementById('authInput').value = '';
   showApp();
 }
@@ -1334,7 +1369,11 @@ function showApp() {
   unlocked = true;
   // 输入密码后:不管本地是否有数据,都自动从 GitHub 拉取最新数据
   // 逾期提醒挂在同步之后:同步可能改数据、也可能自己弹冲突框抢走 #mb,拉完再判才准
-  syncOnOpen().finally(() => maybeShowOverdueAlert());
+  /* 再兜一道:库没打开就别去同步,否则 new SQL.Database(null) 会被当成云端坏了 */
+  whenDbReady().then(ready => {
+    if (!ready) { toast('本机数据没打开:' + (bootErr || '未知原因') + ',刷新页面重来一次'); return; }
+    return syncOnOpen();
+  }).finally(() => { if (db) maybeShowOverdueAlert(); });
 }
 function lockApp() {
   closeM();
@@ -1435,6 +1474,10 @@ function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
 async function doSync(options = {}) {
   const automatic = Boolean(options.automatic);
   if (!ghReady()) return false;
+  /* modify by huangle 日期:2026-08-25 库没打开就不备份
+     下面 isDbEmpty() 要查库,db 为 null 会直接抛;更要紧的是这时候本机看着就是空的,
+     万一走到上传分支等于拿空库覆盖云端。宁可这次不备份。 */
+  if (!SQL || !db) { if (!automatic) toast('本机数据还没打开,这次先不备份'); return false; }
   if (isDbEmpty()) {
     // 关键防护:本地没有任何数据时,绝不把空库推到云端(否则会覆盖/清空云端备份,导致其它设备也变空)
     if (!automatic) { const st0 = document.getElementById('syncState'); if (st0) st0.textContent = '本地无数据,已跳过备份(避免覆盖云端)'; toast('本地没有数据,已跳过备份以免覆盖云端'); }
@@ -1632,6 +1675,10 @@ async function resolveSyncUseLocal() {
 // 登录后自动同步:拉取云端 → 与本机对比 → 有差异让用户选(用本机 or 用云端)
 async function syncOnOpen() {
   if (!ghReady() || !navigator.onLine) return;
+  /* modify by huangle 日期:2026-08-25 库没打开就直接不同步
+     summarizeDb 内部是 try/catch 兜底的,拿 null 进去只会静悄悄返回 {ok:false},
+     于是错怪到云端头上。这里说清楚是本机还没就绪,云端一个字节都不用碰。 */
+  if (!SQL || !db) { toast('本机数据还没打开,这次先不同步'); return; }
   const cfg = ghCfg();
   let cloudBytes;
   try {
@@ -1792,14 +1839,25 @@ async function boot() {
     updateSyncLabel();
     // 拉取放到登录成功后(showApp),确保"输入密码后才自动拉取 GitHub 数据"
   } catch (e) {
-    document.getElementById('authErr').textContent = '初始化失败:' + e.message;
+    bootErr = e && e.message ? e.message : String(e);
+    document.getElementById('authErr').textContent = '初始化失败:' + bootErr;
+    /* 已经进了主界面才失败的话,登录页那行字看不见,补一条 toast,别让人以为是云端的问题 */
+    if (unlocked) toast('本机数据没打开:' + bootErr + ',先别记账,刷新页面重来一次');
     console.error(e);
   }
 }
+/* modify by huangle 日期:2026-08-25 用数据库前先过这道门
+   boot() 自己吞了异常,所以 await 它一定会 resolve;回来看 db 有没有就知道成没成。 */
+async function whenDbReady() {
+  if (db) return true;
+  if (bootDone) { try { await bootDone; } catch (e) { } }
+  return !!db;
+}
 window.addEventListener('online', () => {
   if (!unlocked) return;      // 未登录不联网同步
+  if (!db) return;            // 数据库还没打开,同步没有意义
   if (dirty) scheduleAutoSync(300);
   else syncOnOpen();
 });
-boot();
+bootDone = boot();
 
