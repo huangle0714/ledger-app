@@ -185,6 +185,11 @@ input,textarea,select{font-size:16px}
 .card-item.overdue{border-color:#e79aa1;background:#fff1f2;box-shadow:0 4px 14px rgba(223,93,103,.2)}
 .late-badge{font-size:9px;font-weight:800;color:#fff;background:#c8323f;border-radius:6px;padding:2px 7px;letter-spacing:.02em;margin-left:6px}
 .card-due.late{color:#c8323f;font-weight:700}
+/* 逾期卡置顶后的分组小标题(卡片列表里当普通 flex 子项排,横线自己撑满剩余宽度) */
+.grp-h{display:flex;align-items:center;gap:8px;margin:2px 2px -2px;font-size:11px;font-weight:800;color:#c8323f}
+.grp-h i{flex:1;height:1px;background:#f0c3c7;font-style:normal}
+.grp-h.other{color:#8993a2}
+.grp-h.other i{background:var(--line)}
 
 /* 登录后的逾期提醒弹窗 */
 .due-lead{font-size:12px;line-height:1.6;color:var(--muted);margin:-4px 0 10px}
@@ -199,6 +204,15 @@ input,textarea,select{font-size:16px}
 .due-sub{font-size:10px;color:var(--muted)}
 .due-total{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:11px 12px;background:#f7f8fa;border:1px solid var(--line);border-radius:13px;font-size:12px;color:var(--muted)}
 .due-total strong{font-size:15px;color:#c8323f}
+/* 逾期弹窗多选:22px 勾选圈 + 一键「已还款」 */
+.pick-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:-2px 0 8px}
+.pick-hint{font-size:11px;color:var(--muted)}
+.pick-all{border:1px solid var(--line);background:#fff;border-radius:9px;padding:5px 10px;font-size:11px;font-weight:700;color:#59636f;cursor:pointer}
+.due-pick{flex:0 0 auto;width:22px;height:22px;margin-top:1px;border-radius:50%;border:1.5px solid #d9b3b7;background:#fff;display:grid;place-items:center;font-size:12px;font-weight:800;color:transparent;cursor:pointer}
+.due-pick.on{background:#c8323f;border-color:#c8323f;color:#fff}
+.due-item.picked{border-color:#c8323f;background:#fff0f1;box-shadow:0 3px 10px rgba(200,50,63,.12)}
+.paid-btn{width:100%;border:0;border-radius:12px;padding:13px;font-size:14px;font-weight:800;color:#fff;background:#c8323f;margin-top:12px;box-shadow:0 6px 16px rgba(200,50,63,.22);cursor:pointer}
+.paid-btn.off{background:#e6e9ef;color:#a3abb8;box-shadow:none;cursor:default}
 
 /* 记还款时的差额提示 */
 .diff-box{display:flex;align-items:center;gap:10px;margin-top:8px;padding:10px 12px;background:#f4f8ff;border:1px solid #cfe0ff;border-radius:12px}

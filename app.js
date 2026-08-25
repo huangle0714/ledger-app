@@ -297,6 +297,38 @@ function sortedCards() {
   return rows;
 }
 
+/* modify by huangle 日期:2026-08-25 逾期卡片置顶 */
+/* 判一张卡逾期要翻它整张流水(getTx + 最多 3 轮 cycleDue),置顶后排序和渲染各要判一遍。
+   同一天、同一份数据结果不会变,按 (日期, changeVersion) 缓存;persist() 会自增
+   changeVersion,所以记账/导入/同步之后自动失效,不会拿旧结果糊在界面上。 */
+let odCache = new Map(), odCacheKey = '';
+function overdueOf(c) {
+  const key = todayStr() + '#' + changeVersion;
+  if (key !== odCacheKey) { odCache = new Map(); odCacheKey = key; }
+  if (odCache.has(c.id)) return odCache.get(c.id);
+  const v = overdueInfo(c);
+  odCache.set(c.id, v);
+  return v;
+}
+function resetOverdueCache() { odCache = new Map(); odCacheKey = ''; }
+/* 逾期的一律排最前面(四种排序都置顶),逾期组内按逾期天数从多到少;
+   非逾期的那些卡相对顺序一点不动 —— 只做一次分流,不重排。 */
+function overdueFirst(rows) {
+  const late = [], rest = [];
+  rows.forEach(c => (overdueOf(c) ? late : rest).push(c));
+  late.sort((a, b) => overdueOf(b).days - overdueOf(a).days);
+  return { late, rest };
+}
+/* 卡片列表 HTML:有逾期卡时插两条分组小标题,一张不逾期就跟以前一模一样 */
+function cardListHTML(rows) {
+  const { late, rest } = overdueFirst(rows);
+  if (!late.length) return rows.map(cardItemHTML).join('');
+  const sum = money2(late.reduce((a, c) => a + Number(overdueOf(c).remain || 0), 0));
+  let h = `<div class="grp-h">逾期 ${late.length} 张 · 共 ${yuan(sum)}<i></i></div>` + late.map(cardItemHTML).join('');
+  if (rest.length) h += `<div class="grp-h other">其它 ${rest.length} 张<i></i></div>` + rest.map(cardItemHTML).join('');
+  return h;
+}
+
 /* ---------- 额度反算(同 xyk server) ---------- */
 /* 对额度生效的金额:一般等于流水金额;占额度型分期入账时本金早被银行占掉了,
    这里只扣手续费,所以单独存 limitAmount。null 表示按全额扣。 */
@@ -596,7 +628,7 @@ function cardItemHTML(c) {
   const dueToday = isRepayOn(c, todayStr());
   /* 逾期优先于「今日还款」,一张卡只挂一个标;这里必须用 late.repay(过去那个还款日),
      getEffectiveRepayDate 永远返回未来日期,拿它显示会说成还没到期。 */
-  const late = overdueInfo(c);
+  const late = overdueOf(c);
   return `<button class="card-item ${late ? 'overdue' : (dueToday ? 'due-today' : '')}" onclick="openCard(${c.id})">` +
     `<span class="card-top"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
     `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${late ? `<span class="late-badge">逾期 ${late.days} 天</span>` : (dueToday ? '<span class="today-badge">今日还款</span>' : '')}</strong>` +
@@ -619,14 +651,14 @@ function renderHome() {
   document.getElementById('heroFixed').textContent = yuan(t.fixed);
   document.getElementById('heroTemp').textContent = yuan(t.temp);
   document.getElementById('heroAvail').textContent = yuan(t.avail);
-  document.getElementById('homeCards').innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片,去设置里添加</div>';
+  document.getElementById('homeCards').innerHTML = cs.length ? cardListHTML(cs) : '<div class="flow-empty">还没有卡片,去设置里添加</div>';
 }
 function renderCards() {
   const el = document.getElementById('allCards');
   if (!el) return;
   const cs = sortedCards();
   const cnt = document.getElementById('cardsCount'); if (cnt) cnt.textContent = cs.length + ' 张卡片';
-  el.innerHTML = cs.length ? cs.map(cardItemHTML).join('') : '<div class="flow-empty">还没有卡片</div>';
+  el.innerHTML = cs.length ? cardListHTML(cs) : '<div class="flow-empty">还没有卡片</div>';
 }
 function flowItemHTML(tx, tap) {
   const card = getCard(tx.cardId) || {};
@@ -752,7 +784,8 @@ function confirmDelPlate(id) {
   }
 }
 /* ---------- 页面切换 ---------- */
-function renderAll() { renderHome(); renderCards(); renderPlates(); }
+/* 每轮整体重绘先清逾期缓存:同步/导入这类不走 persist() 的入口也能拿到新结果 */
+function renderAll() { resetOverdueCache(); renderHome(); renderCards(); renderPlates(); }
 function go(p) {
   document.querySelectorAll('.page').forEach(x => x.classList.toggle('active', x.dataset.page === p));
   document.querySelectorAll('.nav-item').forEach((n, i) => n.classList.toggle('active', ['home', 'plates', 'settings'][i] === p));
@@ -777,23 +810,66 @@ let pendingDueAlert = false;
 function dueSnoozed() { return localStorage.getItem(DUE_SNOOZE_KEY) === todayStr(); }
 function snoozeDue() { localStorage.setItem(DUE_SNOOZE_KEY, todayStr()); closeM(); }
 function overdueCards() {
-  return getCards().map(c => { const o = overdueInfo(c); return o ? Object.assign({ card: c }, o) : null; })
+  return getCards().map(c => { const o = overdueOf(c); return o ? Object.assign({ card: c }, o) : null; })
     .filter(Boolean).sort((x, y) => y.days - x.days);
 }
 function dueGoCard(id) { pendingDueAlert = false; openCard(id); }
-function showOverdueAlert(list) {
-  const total = money2(list.reduce((a, x) => a + x.remain, 0));
+/* modify by huangle 日期:2026-08-25 逾期弹窗多选 +「已还款」 */
+/* 打开时默认一张都不勾:按钮是灰的,误触也写不进数据。勾选状态只在弹窗开着时有效,不入库。 */
+let dueRows = [], duePicked = new Set(), dueSaving = false;
+function showOverdueAlert(list) { dueRows = list; duePicked = new Set(); renderDueBody(); }
+function duePick(e, id) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }   /* 22px 勾选圈只管选中,不要连带跳进卡片 */
+  if (duePicked.has(id)) duePicked.delete(id); else duePicked.add(id);
+  renderDueBody();
+}
+function duePickAll() {
+  const full = duePicked.size >= dueRows.length;
+  duePicked = full ? new Set() : new Set(dueRows.map(x => x.card.id));
+  renderDueBody();
+}
+function renderDueBody() {
+  const list = dueRows;
+  const total = money2(list.reduce((a, x) => a + Number(x.remain || 0), 0));
+  const pick = list.filter(x => duePicked.has(x.card.id));
+  const psum = money2(pick.reduce((a, x) => a + Number(x.remain || 0), 0));
   setModal(list.length + ' 张卡要还款',
-    `<p class="due-lead">这 ${list.length} 张都过了还款日、还没记到够数的还款。右边是「还差多少」。点卡片可以直接记这笔还款。</p>` +
-    `<div class="due-list">` + list.map(x =>
-      `<div class="due-item" onclick="dueGoCard(${x.card.id})">` +
-      `<span class="due-main"><span class="due-name">${esc(x.card.bank || x.card.name || '卡片')}<i class="due-badge">逾期 ${x.days} 天</i></span>` +
-      `<span class="due-meta">还款日 ${esc(String(x.repay).slice(5))} · ${x.paid > 0.005 ? `已还 ${yuan(x.paid)},还差这些` : '一直没记还款'}</span>` +
-      `<span class="due-meta">${esc(x.card.name || '')}${x.card.name ? ' · ' : ''}尾号 ${esc(x.card.tail || '----')}</span></span>` +
-      `<span class="due-right"><strong class="due-amt">${yuan(x.remain)}</strong>` +
-      `<span class="due-sub">${x.paid > 0.005 ? '应还 ' + yuan(x.due) : '本期应还'}</span></span></div>`).join('') + `</div>` +
+    `<p class="due-lead">这 ${list.length} 张都过了还款日、还没记到够数的还款。勾上已经还掉的卡,点下面的按钮就按「还差多少」各记一笔还款;点卡片名字那一片,还是照旧进卡片里自己记。</p>` +
+    `<div class="pick-bar"><span class="pick-hint">${pick.length ? `已勾 ${pick.length} 张` : '勾选已经还掉的卡'}</span>` +
+    `<button class="pick-all" onclick="duePickAll()">${duePicked.size >= list.length ? '全不选' : '全选'}</button></div>` +
+    `<div class="due-list">` + list.map(x => {
+      const on = duePicked.has(x.card.id);
+      return `<div class="due-item${on ? ' picked' : ''}" onclick="dueGoCard(${x.card.id})">` +
+        `<span class="due-pick${on ? ' on' : ''}" onclick="duePick(event,${x.card.id})">✓</span>` +
+        `<span class="due-main"><span class="due-name">${esc(x.card.bank || x.card.name || '卡片')}<i class="due-badge">逾期 ${x.days} 天</i></span>` +
+        `<span class="due-meta">还款日 ${esc(String(x.repay).slice(5))} · ${x.paid > 0.005 ? `已还 ${yuan(x.paid)},还差这些` : '一直没记还款'}</span>` +
+        `<span class="due-meta">${esc(x.card.name || '')}${x.card.name ? ' · ' : ''}尾号 ${esc(x.card.tail || '----')}</span></span>` +
+        `<span class="due-right"><strong class="due-amt">${yuan(x.remain)}</strong>` +
+        `<span class="due-sub">${x.paid > 0.005 ? '应还 ' + yuan(x.due) : '本期应还'}</span></span></div>`;
+    }).join('') + `</div>` +
     `<div class="due-total"><span>加起来还要还</span><strong>${yuan(total)}</strong></div>` +
+    (pick.length
+      ? `<button class="paid-btn" onclick="dueMarkPaid()">已还款 · 记 ${pick.length} 笔 ${yuan(psum)}</button>`
+      : `<button class="paid-btn off" disabled>已还款(先勾选卡片)</button>`) +
     `<button class="secondary-action" onclick="snoozeDue()">稍后还款(今天不再提醒)</button>`);
+}
+/* 勾选后一键记账:每张卡记一笔真实还款(金额=界面上的「还差」,日期=今天,备注「还款」),
+   和进卡片手动记一笔完全一样 —— 可用额度照样加回去,流水里看得到,记错了进卡片删掉就行。
+   金额恰好等于还差,不会触发「还款差额」拆分;日期是今天,落在本期还款窗口内,逾期随即解除。 */
+async function dueMarkPaid() {
+  if (dueSaving) return;                                 /* 连点两次会记成两笔,这里挡住 */
+  const pick = dueRows.filter(x => duePicked.has(x.card.id) && Number(x.remain) > 0.005);
+  if (!pick.length) return;
+  dueSaving = true;
+  try {
+    for (const x of pick) await addTransaction(x.card.id, { type: 'repayment', amount: money2(x.remain), date: todayStr(), note: '还款' });
+  } finally { dueSaving = false; }
+  duePicked = new Set();
+  renderAll();
+  toast(`已记 ${pick.length} 笔还款`);
+  const left = overdueCards();                           /* 记完重算:全还完就关掉,还有剩的只留没勾的 */
+  if (!left.length) { closeM(); return; }
+  dueRows = left; renderDueBody();
 }
 function maybeShowOverdueAlert() {
   if (!unlocked || dueSnoozed()) return;
