@@ -11,6 +11,10 @@ const SYNC_DIRTY_KEY = 'ledger-sync-dirty';
 const DEFAULT_PASS = '85168377';
 const AUTO_SYNC_DELAY = 1800;
 const MARKS = ['blue', 'orange', 'purple', 'teal', 'red'];
+/* 码牌左侧方块的归属名配色:10 色,与银行 5 色分开,名字多也不容易撞色 */
+const OWNER_COLORS = ['blue', 'teal', 'orange', 'purple', 'red', 'cyan', 'green', 'magenta', 'brown', 'slate'];
+const DUE_SNOOZE_KEY = 'ledger-due-snooze';   // 逾期弹窗「稍后还款」只压当天,不进数据库
+const DIFF_SPLIT_KEY = 'ledger-diff-split';   // 还款差额是否拆两笔,记住上次选择
 const titles = { home: '总览', cards: '我的卡片', plates: '码牌', settings: '设置' };
 
 let SQL = null;      // sql.js 模块
@@ -36,6 +40,44 @@ function yuan(n) { return '¥' + Number(n || 0).toLocaleString('zh-CN', { minimu
 function signed(n) { return (n < 0 ? '-' : '+') + '¥' + Math.abs(n).toLocaleString('zh-CN', { minimumFractionDigits: (n % 1) ? 2 : 0, maximumFractionDigits: 2 }); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function markColor(s) { let h = 0; for (const ch of String(s || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return MARKS[h % MARKS.length]; }
+/* 归属名配色:FNV-1a 32 位 + 末尾混淆。
+   不能复用 markColor:它是 h*31,而 31 % 10 == 1,哈希会退化成「字符码之和 mod 10」,
+   字序完全失效(「张三」和「三张」必然同色)。FNV-1a 的 16777619 % 10 == 9,对字序敏感。
+   注意 (h>>>0) % n 的括号:% 优先级高于 >>>,漏了括号会变成 P[h>>>0] 越界。 */
+function ownerHash(s) {
+  let h = 0x811c9dc5;
+  for (const ch of String(s || '')) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193); }
+  h ^= h >>> 15; h = Math.imul(h, 0x2545f491); h ^= h >>> 13;
+  return h >>> 0;
+}
+/* 光靠哈希不够:10 个色板里放 4 个名字,撞色概率接近一半(1×.9×.8×.7≈50%),
+   而用户要的就是「不同名字不同色」。所以按名字排序过一遍,撞了就往后顺延一个颜色,
+   ≤10 个归属人保证两两不同色;名字集合没变就直接吃缓存,不重复查库。 */
+let ownerColorMap = null, ownerColorKey = null;
+function ownerColorTable() {
+  const names = [...new Set(getPlates().map(p => String(p.owner || '').trim()).filter(Boolean))].sort();
+  const key = names.join('|');
+  if (ownerColorMap && ownerColorKey === key) return ownerColorMap;
+  const used = new Set(), map = {};
+  names.forEach(n => {
+    let i = ownerHash(n) % OWNER_COLORS.length;
+    for (let k = 0; k < OWNER_COLORS.length && used.has(i); k++) i = (i + 1) % OWNER_COLORS.length;
+    used.add(i); map[n] = OWNER_COLORS[i];
+  });
+  ownerColorKey = key; ownerColorMap = map;
+  return map;
+}
+function ownerColor(s) {
+  const n = String(s || '').trim(); if (!n) return OWNER_COLORS[0];
+  return ownerColorTable()[n] || OWNER_COLORS[ownerHash(n) % OWNER_COLORS.length];
+}
+/* 方块里写归属名:1~3 字整名显示(3 字自动缩到 .n3),4 字及以上取前 2 字,没填归属显示灰色 ? */
+function ownerMark(owner) {
+  const s = String(owner || '').trim();
+  if (!s) return { cls: 'none', text: '?' };
+  const arr = [...s];
+  return { cls: 'oc-' + ownerColor(s) + (arr.length === 3 ? ' n3' : ''), text: arr.length <= 3 ? s : arr.slice(0, 2).join('') };
+}
 function shortName(bank) { return (String(bank || '卡').replace(/银行|信用卡|股份|有限公司/g, '').slice(0, 2)) || '卡'; }
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2200); }
 
@@ -168,6 +210,75 @@ function getEffectiveRepayDay(c) { const d = getEffectiveRepayDate(c.repayDay); 
 function isRepayOn(c, dateStr) { return getEffectiveRepayDate(c.repayDay) === dateStr; }
 function isBillOn(c, dateStr) { const bd = parseBillDay(c.billDay); if (!bd) return false; return parseDate(dateStr).getDate() === bd; }
 
+/* ---------- 逾期还款判定 ----------
+   cards 表没有「本期应还」字段,按用户拍板的口径:用记录的流水周期现算。
+   本期 = (上一个账单日, 最近一个账单日],本期应还 = 该窗口内的消费合计;
+   已还 = 上一个还款日之后记录的还款合计(上个还款日当天那笔是还上一期的,不算进来)。
+   所有周期日期都从原点用 addMonthsClamped 现算,绝不做「未来日期回退一月」——
+   31 号的卡被夹到 2-28 再回退会永久漂成 1-28,和 instPeriodDate 是同一个坑。 */
+function lastBillDate(c, ref) {
+  const bd = parseBillDay(c.billDay); if (!bd) return null;
+  const r = parseDate(ref);
+  const d = dateWithDay(r.getFullYear(), r.getMonth(), bd);
+  return d > r ? dateWithDay(r.getFullYear(), r.getMonth() - 1, bd) : d;
+}
+/* 某个账单日对应的还款日 = 从还款日原点算起、第一个晚于该账单日的实例(单调递增,可二向逼近) */
+function repayDateForBill(c, billDate) {
+  const orig = parseRepayDate(c.repayDay); if (!orig) return null;
+  const o = parseDate(orig);
+  let k = (billDate.getFullYear() - o.getFullYear()) * 12 + (billDate.getMonth() - o.getMonth()), g = 0;
+  while (addMonthsClamped(o, k) <= billDate && g++ < 600) k += 1;
+  g = 0;
+  while (addMonthsClamped(o, k - 1) > billDate && g++ < 600) k -= 1;
+  return addMonthsClamped(o, k);
+}
+/* 算一个账单周期。日期都是 YYYY-MM-DD,可以直接字符串比较。
+   due/paid 按窗口算(用户拍板:本期应还＝本期账单窗口内的消费);
+   owed 是全库跑一遍的欠款余额,只用来兜底压掉误报,理由见 overdueInfo。
+   还款归属是不重不漏的:落在 (上一还款日, 本期还款日] 的还款只算进这一期。 */
+function cycleDue(c, billDate, ref) {
+  const bd = parseBillDay(c.billDay);
+  const prevBill = dateWithDay(billDate.getFullYear(), billDate.getMonth() - 1, bd);
+  const a = fmtDate(prevBill), b = fmtDate(billDate);
+  const pr = fmtDate(repayDateForBill(c, prevBill));
+  let due = 0, paid = 0, allSpend = 0, allPaid = 0;
+  getTx(c.id).forEach(t => {
+    const d = String(t.date || ''); if (!d) return;
+    const v = Number(t.amount || 0);
+    if (t.type === 'repayment') { if (d <= ref) allPaid += v; if (d > pr && d <= ref) paid += v; }
+    else { if (d <= b) allSpend += v; if (d > a && d <= b) due += v; }
+  });
+  due = money2(due); paid = money2(paid);
+  const remain = Math.max(0, money2(due - paid)), owed = Math.max(0, money2(allSpend - allPaid));
+  return { bill: b, prevBill: a, repay: fmtDate(repayDateForBill(c, billDate)), due, paid, remain, owed, need: Math.min(remain, owed) };
+}
+/* 已经过了还款日、还没记到够数还款的卡。判据按用户要求放宽,宁可不报也不误报:
+   缺账单日/还款日不判、额度已回满算已还清、本期没消费不判、算出来不差钱不判。
+   owed(全库欠款余额)这道闸是必须的:随手消费随手还的人,还款会落到上一期的窗口里,
+   只看窗口会天天误报;反过来不能用「本期有单笔≥应还就算还了」那种放宽——
+   正常人每月都在上一个还款日还掉整期账单,那笔钱会把本期的逾期永久压住,Task B 就废了。 */
+function overdueInfo(c, ref = todayStr()) {
+  if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
+  if (Number(c.available) >= Number(c.total) - 0.01) return null;
+  const r = parseDate(ref);
+  let bill = lastBillDate(c, ref), info = null, g = 0;
+  while (bill && g++ < 3) {                                  // 最近一个「还款日已过」的周期
+    const cyc = cycleDue(c, bill, ref);
+    if (parseDate(cyc.repay) < r) { info = cyc; break; }
+    bill = dateWithDay(bill.getFullYear(), bill.getMonth() - 1, parseBillDay(c.billDay));
+  }
+  if (!info || info.due <= 0.01 || info.need <= 0.01) return null;
+  return { repay: info.repay, days: Math.max(1, Math.round((r - parseDate(info.repay)) / 86400000)), due: info.due, paid: info.paid, remain: info.need };
+}
+/* 这次还款该冲抵多少:优先用逾期那期的「还差」,没逾期就用当期账单的「还差」(Task C 拿它算差额) */
+function dueToRepay(c, ref = todayStr()) {
+  const late = overdueInfo(c, ref); if (late) return late;
+  if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
+  const bill = lastBillDate(c, ref); if (!bill) return null;
+  const cyc = cycleDue(c, bill, ref);
+  return { repay: cyc.repay, days: 0, due: cyc.due, paid: cyc.paid, remain: cyc.need };
+}
+
 /* ---------- 数据读取 ---------- */
 function getCards() { return all('SELECT * FROM cards ORDER BY id'); }
 function getCard(id) { const r = all('SELECT * FROM cards WHERE id=?', [id]); return r[0] || null; }
@@ -194,15 +305,17 @@ function txLimitAmount(tx) {
   const v = Number(tx.limitAmount);
   return Number.isFinite(v) ? v : Number(tx.amount || 0);
 }
+/* money2 收尾:浮点相加会留下 8500.000000000002 这种尾巴,
+   Task C 把一笔还款拆成两笔时,「两笔之和」必须和「一笔」写出完全相同的可用额度。 */
 function applyToAvailable(available, total, tx) {
   const amt = txLimitAmount(tx);
-  if (tx.type === 'repayment') return Math.min(total, available + amt);
-  return Math.max(0, available - amt);
+  if (tx.type === 'repayment') return money2(Math.min(total, available + amt));
+  return money2(Math.max(0, available - amt));
 }
 function reverseFromAvailable(available, total, tx) {
   const amt = txLimitAmount(tx);
-  if (tx.type === 'repayment') return Math.max(0, available - amt);
-  return Math.min(total, available + amt);
+  if (tx.type === 'repayment') return money2(Math.max(0, available - amt));
+  return money2(Math.min(total, available + amt));
 }
 /* ---------- 数据写入 ---------- */
 async function addTransaction(cardId, input) {
@@ -481,13 +594,16 @@ function cardItemHTML(c) {
   const used = cardUsed(c), status = cardStatus(c), mark = markColor(c.bank);
   const due = getEffectiveRepayDate(c.repayDay);
   const dueToday = isRepayOn(c, todayStr());
-  return `<button class="card-item ${dueToday ? 'due-today' : ''}" onclick="openCard(${c.id})">` +
+  /* 逾期优先于「今日还款」,一张卡只挂一个标;这里必须用 late.repay(过去那个还款日),
+     getEffectiveRepayDate 永远返回未来日期,拿它显示会说成还没到期。 */
+  const late = overdueInfo(c);
+  return `<button class="card-item ${late ? 'overdue' : (dueToday ? 'due-today' : '')}" onclick="openCard(${c.id})">` +
     `<span class="card-top"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
-    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${dueToday ? '<span class="today-badge">今日还款</span>' : ''}</strong>` +
+    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${late ? `<span class="late-badge">逾期 ${late.days} 天</span>` : (dueToday ? '<span class="today-badge">今日还款</span>' : '')}</strong>` +
     `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span></span>` +
     `<span class="card-right"><strong class="card-avail">可用 ${yuan(c.available)}</strong>` +
     `<span class="card-amount">已用 ${yuan(used)}</span>` +
-    `<span class="card-due ${dueToday ? 'today' : (status === '已还清' ? 'ok' : '')}">${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}</span>` +
+    `<span class="card-due ${late ? 'late' : (dueToday ? 'today' : (status === '已还清' ? 'ok' : ''))}">${late ? `还款 ${late.repay} · 还差 ${yuan(late.remain)}` : `${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}`}</span>` +
     `${c.billDay ? `<span class="card-bill">账单 ${esc(c.billDay)}</span>` : ''}</span>` +
     `<span class="chevron">›</span></span>` +
     `<span class="card-fees">${cardFeeLines(c.id)}${cardInstLine(c.id)}</span></button>`;
@@ -518,15 +634,18 @@ function flowItemHTML(tx, tap) {
   const k = isPay ? 'pay' : 'out';
   const amt = (isPay ? 1 : -1) * Number(tx.amount || 0);
   const settle = isPay ? '' : ` · 到账 ${yuan(Number(tx.amount || 0) - getFeeAmount(tx))}`;
+  /* 还款差额没有专门的关联字段(两笔都是普通还款,对可用额度的影响与合成一笔完全等价),
+     只按备注认出来加个「差额」小标,方便对账时看出这笔是超出本期应还的部分。 */
+  const isDiff = isPay && String(tx.note || '') === '还款差额';
   return `<div class="flow-item ${tap ? 'tap' : ''}" ${tap ? `onclick="confirmDelTx(${tx.id})"` : ''}>` +
     `<span class="flow-ic ${k}">${isPay ? '↓' : '↑'}</span>` +
-    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}</span>` +
-    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}</span></span>` +
+    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}${isDiff ? '<i class="diff-chip">差额</i>' : ''}</span>` +
+    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}${isDiff ? ' · 超出本期应还' : ''}</span></span>` +
     `<span class="flow-amt ${k}">${signed(amt)}</span></div>`;
 }
 /* ---------- 码牌页(替换原「还款」页) ---------- */
 function wayLabel(w) { return w === 'ali' ? '支付宝' : w === 'wx' ? '微信' : '未使用'; }
-function wayMark(w) { return w === 'ali' ? '支' : w === 'wx' ? '微' : '码'; }
+/* wayMark(支/微/码)已删除:左侧方块改成归属名配色,渠道只留右侧 .way 标签,信息没丢 */
 function wayClass(w) { return w === 'ali' ? 'ali' : w === 'wx' ? 'wx' : 'none'; }
 
 function getPlates() { return all('SELECT * FROM plates ORDER BY id'); }
@@ -558,9 +677,10 @@ function sortedPlates() {
 }
 function plateItemHTML(p) {
   const wc = wayClass(p.lastWay);
+  const om = ownerMark(p.owner);
   const used = p.lastUsedAt ? '上次 ' + esc(String(p.lastUsedAt).slice(5)) : '未使用';
   return `<button class="plate" onclick="openPlateEdit(${p.id})">` +
-    `<span class="pm ${wc}">${wayMark(p.lastWay)}</span>` +
+    `<span class="pm ${om.cls}">${esc(om.text)}</span>` +
     `<span class="plate-main"><span class="plate-name">${esc(p.name || '未命名码牌')}</span>` +
     `<span class="plate-owner">归属 <b>${esc(p.owner || '—')}</b></span></span>` +
     `<span class="plate-right"><span class="way ${wc}">${wayLabel(p.lastWay)}</span>` +
@@ -588,7 +708,7 @@ function openPlateEdit(id) {
   const p = getPlate(id); if (!p) return;
   const w = p.lastWay === 'wx' ? 'wx' : 'ali';   // 默认选中上次方式,新码牌默认支付宝
   setModal('编辑码牌',
-    `<div class="plate-ctx"><span class="pm ${wayClass(p.lastWay)}">${wayMark(p.lastWay)}</span><div><b>${esc(p.name || '未命名码牌')}</b><small>归属 ${esc(p.owner || '—')}</small></div></div>` +
+    `<div class="plate-ctx"><span class="pm ${ownerMark(p.owner).cls}">${esc(ownerMark(p.owner).text)}</span><div><b>${esc(p.name || '未命名码牌')}</b><small>归属 ${esc(p.owner || '—')}</small></div></div>` +
     `<label class="field-label">上次使用方式</label>` +
     `<div class="way-seg" id="wSeg"><button class="ali ${w === 'ali' ? 'on' : ''}" data-w="ali"><span class="dot">支</span>支付宝</button>` +
     `<button class="wx ${w === 'wx' ? 'on' : ''}" data-w="wx"><span class="dot">微</span>微信</button></div>` +
@@ -623,7 +743,7 @@ async function saveNewPlate() {
 function openPlateManage() {
   const ps = getPlates();
   setModal('删除码牌', '<p class="muted" style="margin:-6px 0 10px">删除后该码牌记录会被移除，操作不可撤销。</p>' +
-    (ps.length ? ps.map(p => `<div class="pick-row"><span class="pm ${wayClass(p.lastWay)}" style="width:32px;height:32px;border-radius:9px;font-size:12px">${wayMark(p.lastWay)}</span><span><strong style="font-size:13px">${esc(p.name || '未命名码牌')}</strong><br><span class="muted">归属 ${esc(p.owner || '—')}</span></span><button class="pick-del" onclick="confirmDelPlate(${p.id})">删除</button></div>`).join('') : '<div class="flow-empty">还没有码牌</div>'));
+    (ps.length ? ps.map(p => `<div class="pick-row"><span class="pm ${ownerMark(p.owner).cls}">${esc(ownerMark(p.owner).text)}</span><span><strong style="font-size:13px">${esc(p.name || '未命名码牌')}</strong><br><span class="muted">归属 ${esc(p.owner || '—')}</span></span><button class="pick-del" onclick="confirmDelPlate(${p.id})">删除</button></div>`).join('') : '<div class="flow-empty">还没有码牌</div>'));
 }
 function confirmDelPlate(id) {
   const p = getPlate(id); if (!p) return;
@@ -642,9 +762,45 @@ function go(p) {
 }
 /* ---------- 弹层通用 ---------- */
 function show() { document.getElementById('mb').classList.add('show'); }
-function closeM() { document.getElementById('mb').classList.remove('show'); }
+function closeM() {
+  document.getElementById('mb').classList.remove('show');
+  /* 逾期提醒被别的弹层(比如同步冲突)挡住时先记账,等那个弹层关掉再补上 */
+  if (pendingDueAlert) { pendingDueAlert = false; setTimeout(maybeShowOverdueAlert, 260); }
+}
 function setModal(title, html) { document.getElementById('mTitle').textContent = title; document.getElementById('mBody').innerHTML = html; show(); }
 function val(id) { const e = document.getElementById(id); return e ? e.value.trim() : ''; }
+
+/* ---------- 逾期还款提醒弹窗 ----------
+   「稍后还款」只压当天,存 localStorage 不进数据库:数据库里加标记会跟着同步跑到别的设备上,
+   还会把每天的点击变成同步差异。只要还款没记够,第二天打开照样提醒。 */
+let pendingDueAlert = false;
+function dueSnoozed() { return localStorage.getItem(DUE_SNOOZE_KEY) === todayStr(); }
+function snoozeDue() { localStorage.setItem(DUE_SNOOZE_KEY, todayStr()); closeM(); }
+function overdueCards() {
+  return getCards().map(c => { const o = overdueInfo(c); return o ? Object.assign({ card: c }, o) : null; })
+    .filter(Boolean).sort((x, y) => y.days - x.days);
+}
+function dueGoCard(id) { pendingDueAlert = false; openCard(id); }
+function showOverdueAlert(list) {
+  const total = money2(list.reduce((a, x) => a + x.remain, 0));
+  setModal(list.length + ' 张卡要还款',
+    `<p class="due-lead">这 ${list.length} 张都过了还款日、还没记到够数的还款。右边是「还差多少」。点卡片可以直接记这笔还款。</p>` +
+    `<div class="due-list">` + list.map(x =>
+      `<div class="due-item" onclick="dueGoCard(${x.card.id})">` +
+      `<span class="due-main"><span class="due-name">${esc(x.card.bank || x.card.name || '卡片')}<i class="due-badge">逾期 ${x.days} 天</i></span>` +
+      `<span class="due-meta">还款日 ${esc(String(x.repay).slice(5))} · ${x.paid > 0.005 ? `已还 ${yuan(x.paid)},还差这些` : '一直没记还款'}</span>` +
+      `<span class="due-meta">${esc(x.card.name || '')}${x.card.name ? ' · ' : ''}尾号 ${esc(x.card.tail || '----')}</span></span>` +
+      `<span class="due-right"><strong class="due-amt">${yuan(x.remain)}</strong>` +
+      `<span class="due-sub">${x.paid > 0.005 ? '应还 ' + yuan(x.due) : '本期应还'}</span></span></div>`).join('') + `</div>` +
+    `<div class="due-total"><span>加起来还要还</span><strong>${yuan(total)}</strong></div>` +
+    `<button class="secondary-action" onclick="snoozeDue()">稍后还款(今天不再提醒)</button>`);
+}
+function maybeShowOverdueAlert() {
+  if (!unlocked || dueSnoozed()) return;
+  const list = overdueCards(); if (!list.length) return;
+  if (document.getElementById('mb').classList.contains('show')) { pendingDueAlert = true; return; }
+  showOverdueAlert(list);
+}
 
 /* ---------- 卡片详情 ---------- */
 function openCard(id) {
@@ -669,25 +825,55 @@ function openCard(id) {
 }
 
 /* ---------- 记一笔流水 ---------- */
+let recCard = null;                                     // 当前正在记流水的卡,updateDiff 要现算本期应还
+function diffSplitOn() { return localStorage.getItem(DIFF_SPLIT_KEY) !== '0'; }   // 默认开启拆分
+function toggleDiffSplit() { localStorage.setItem(DIFF_SPLIT_KEY, diffSplitOn() ? '0' : '1'); updateDiff(); }
 function updateSettle() {
   const on = document.querySelector('.type-seg button.on').dataset.t;
   const box = document.getElementById('settleBox');
-  if (on !== 'spend') { box.classList.add('hide'); return; }
+  if (on === 'spend') {
+    box.classList.remove('hide');
+    const v = parseFloat(val('recAmt')) || 0, fee = v * DEFAULT_FEE_RATE;
+    document.getElementById('recFee').textContent = yuan(+fee.toFixed(2));
+    document.getElementById('recSettle').textContent = yuan(+(v - fee).toFixed(2));
+  } else box.classList.add('hide');
+  updateDiff();
+}
+/* 还款金额超出「本期应还」时提示会另记一笔「还款差额」。
+   口径和卡片列表的逾期判定共用 dueToRepay:逾期就冲那期的还差,没逾期就冲当期的还差。 */
+function updateDiff() {
+  const box = document.getElementById('diffBox'); if (!box) return;
+  const seg = document.querySelector('.type-seg button.on');
+  const type = seg ? seg.dataset.t : 'spend';
+  const amount = parseFloat(val('recAmt')) || 0;
+  const d = (type === 'repayment' && recCard) ? dueToRepay(recCard, val('recDate') || todayStr()) : null;
+  const remain = d ? d.remain : 0, extra = money2(amount - remain);
+  const save = document.getElementById('recSave');
+  if (!d || remain <= 0.005 || extra <= 0.005) {
+    box.classList.add('hide');
+    if (save) save.textContent = '保存流水';
+    return;
+  }
   box.classList.remove('hide');
-  const v = parseFloat(val('recAmt')) || 0, fee = v * DEFAULT_FEE_RATE;
-  document.getElementById('recFee').textContent = yuan(+fee.toFixed(2));
-  document.getElementById('recSettle').textContent = yuan(+(v - fee).toFixed(2));
+  const on = diffSplitOn();
+  document.getElementById('diffText').innerHTML =
+    `${d.days > 0 ? '本期还差' : '本期应还'} <b>${yuan(remain)}</b>,超出 <b>${yuan(extra)}</b>` +
+    `<span class="dbt">${on ? `会另记一笔「还款差额 ${yuan(extra)}」` : '关掉就只记 1 笔完整还款'}</span>`;
+  document.getElementById('diffSw').className = 'sw' + (on ? '' : ' off');
+  if (save) save.textContent = on ? '保存(拆成 2 条流水)' : '保存流水';
 }
 function openRecord(id) {
   const c = getCard(id); if (!c) return;
+  recCard = c;
   setModal('记一笔流水',
     `<p class="muted" style="margin:-6px 0 10px">${esc(c.bank || c.name)} · 尾号 ${esc(c.tail || '----')}</p>` +
     `<div class="type-seg"><button class="on" data-t="spend">消费(支出)</button><button data-t="repayment">还款</button></div>` +
     `<label class="field-label">金额</label><input id="recAmt" class="big-amount-input" inputmode="decimal" placeholder="0.00" oninput="updateSettle()">` +
     `<div class="settle-line" id="settleBox"><span>手续费率 0.25% · 手续费 <b id="recFee">¥0</b></span><span>到账 <strong id="recSettle">¥0</strong></span></div>` +
-    `<label class="field-label">日期</label><input id="recDate" class="modal-input" type="date" value="${todayStr()}">` +
+    `<div class="diff-box hide" id="diffBox"><span class="dbi" id="diffText"></span><span class="sw" id="diffSw" onclick="toggleDiffSplit()"></span></div>` +
+    `<label class="field-label">日期</label><input id="recDate" class="modal-input" type="date" value="${todayStr()}" onchange="updateDiff()">` +
     `<label class="field-label">备注</label><input id="recNote" class="modal-input" placeholder="例如 超市消费">` +
-    `<button class="primary-action" onclick="saveRecord(${id})">保存流水</button>`);
+    `<button class="primary-action" id="recSave" onclick="saveRecord(${id})">保存流水</button>`);
   document.querySelectorAll('.type-seg button').forEach(b => b.onclick = () => { document.querySelectorAll('.type-seg button').forEach(x => x.classList.remove('on')); b.classList.add('on'); updateSettle(); });
   updateSettle();
 }
@@ -695,7 +881,20 @@ async function saveRecord(id) {
   const type = document.querySelector('.type-seg button.on').dataset.t;
   const amount = parseFloat(val('recAmt')) || 0;
   if (amount <= 0) { toast('请输入金额'); return; }
-  await addTransaction(id, { type, amount, date: val('recDate') || todayStr(), note: val('recNote') });
+  const date = val('recDate') || todayStr(), note = val('recNote');
+  /* 拆两笔必须先算好本期还差:第一笔记进去之后 paid 就变了,再算会得到 0。
+     两笔都是普通还款、都不填 limitAmount,对 available 的影响和一笔完整还款完全等价
+     (还款是 min(total, a+x),a+due≤total 时可加,超了两边都顶到 total),所以拆分只影响账面呈现。 */
+  const c = getCard(id);
+  const d = (type === 'repayment' && diffSplitOn() && c) ? dueToRepay(c, date) : null;
+  const remain = d ? d.remain : 0, extra = money2(amount - remain);
+  if (d && remain > 0.005 && extra > 0.005) {
+    await addTransaction(id, { type, amount: remain, date, note });
+    await addTransaction(id, { type, amount: extra, date, note: '还款差额' });
+    renderAll(); openCard(id); toast('已记 2 笔 · 差额 ' + yuan(extra));
+    return;
+  }
+  await addTransaction(id, { type, amount, date, note });
   renderAll(); openCard(id); toast('已记录');
 }
 function confirmDelTx(id) {
@@ -1058,7 +1257,8 @@ function showApp() {
   window.scrollTo(0, 0);
   unlocked = true;
   // 输入密码后:不管本地是否有数据,都自动从 GitHub 拉取最新数据
-  syncOnOpen();
+  // 逾期提醒挂在同步之后:同步可能改数据、也可能自己弹冲突框抢走 #mb,拉完再判才准
+  syncOnOpen().finally(() => maybeShowOverdueAlert());
 }
 function lockApp() {
   closeM();

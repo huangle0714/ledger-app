@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>账务管家 · 设计稿：码牌归属名 / 逾期提醒 / 还款差额</title>
+<style>
+*{box-sizing:border-box}
+:root{--bg:#f5f7fb;--surface:#fff;--ink:#192231;--muted:#7c8798;--line:#e8ecf2;--blue:#3977ee;--blue-soft:#eaf1ff;--green:#23a77a;--green-soft:#e4f8f0;--orange:#e99538;--orange-soft:#fff1df;--red:#df5d67;--red-soft:#fdecee;--shadow:0 10px 24px rgba(31,50,80,.07)}
+body{margin:0;background:#eef1f6;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:26px 16px 60px}
+.wrap>h1{font-size:22px;margin:0 0 6px}
+.lead{font-size:13px;color:#5b6676;line-height:1.7;margin:0 0 26px}
+.sec{background:#fff;border:1px solid #e2e7ef;border-radius:18px;padding:18px;margin-bottom:22px}
+.sec-h{font-size:16px;font-weight:800;margin:0 0 4px}
+.sec-q{font-size:12px;color:var(--muted);line-height:1.7;margin:0 0 16px}
+.sec-q em{font-style:normal;color:#c7525b;font-weight:700}
+.note{font-size:12px;color:#5b6676;line-height:1.8;margin:14px 0 0;padding:12px 13px;background:#f7f9fc;border:1px solid var(--line);border-radius:12px}
+.note b{color:var(--ink)}
+.note code{background:#eef2f8;border-radius:4px;padding:1px 5px;font-size:11px;font-family:ui-monospace,Menlo,monospace}
+.row2{display:flex;flex-wrap:wrap;gap:18px}
+.col{flex:0 0 auto}
+.tag{display:inline-block;font-size:10px;font-weight:800;padding:3px 9px;border-radius:7px;margin-bottom:9px}
+.tag.now{background:#f0f2f5;color:#8993a2}
+.tag.new{background:var(--blue-soft);color:var(--blue)}
+.tag.alt{background:#f0ebff;color:#8060cb}
+.mock{width:390px;max-width:100%;padding:18px;background:var(--bg);border:1px solid #dfe4ec;border-radius:16px}
+.plate-list{display:flex;flex-direction:column;gap:10px}
+.plate{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:13px 14px;box-shadow:0 4px 12px rgba(31,50,80,.035);width:100%;text-align:left;max-width:100%}
+.plate .pm{position:relative;width:42px;height:42px;border-radius:13px;display:grid;place-items:center;font-size:16px;font-weight:800;color:#fff;flex:0 0 auto}
+.pm.ali{background:#1677ff}.pm.wx{background:#07c160}.pm.none{background:#aab3bf}
+.plate-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:5px}
+.plate-name{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plate-owner{font-size:11px;color:var(--muted)}.plate-owner b{color:#59636f;font-weight:600}
+.plate-right{text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:0 0 auto}
+.way{font-size:10px;font-weight:700;padding:3px 9px;border-radius:8px;white-space:nowrap}
+.way.ali{background:#e9f2ff;color:#1677ff}.way.wx{background:#e5f8ee;color:#07c160}.way.none{background:#f0f2f5;color:#8993a2}
+.plate-time{font-size:10px;color:var(--muted);white-space:nowrap}
+.chevron{font-size:21px;color:#a8b1bf}
+/* ===== 任务A 新增:归属名头像 10 色板(白字,亮度均 ≤168) ===== */
+.pm.oc-blue{background:#3d76dc}.pm.oc-teal{background:#27a992}.pm.oc-orange{background:#ed9a3d}
+.pm.oc-purple{background:#8b67d8}.pm.oc-red{background:#dc626c}.pm.oc-cyan{background:#2b8fbf}
+.pm.oc-green{background:#4f9e46}.pm.oc-magenta{background:#c8579f}.pm.oc-brown{background:#a3743f}
+.pm.oc-slate{background:#5a7d9a}
+.pm.n3{font-size:12px;letter-spacing:-.5px}
+.plate-ctx .pm.n3{font-size:10px}
+.pm-badge{position:absolute;right:-3px;bottom:-3px;width:17px;height:17px;border-radius:6px;border:2px solid #fff;display:grid;place-items:center;font-size:9px;font-weight:800;color:#fff;line-height:1}
+.pm-badge.ali{background:#1677ff}.pm-badge.wx{background:#07c160}.pm-badge.none{background:#aab3bf}
+.plate-ctx{display:flex;align-items:center;gap:10px;background:#f7f8fa;border:1px solid var(--line);border-radius:13px;padding:10px 12px;margin:2px 0 4px}
+.plate-ctx .pm{position:relative;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:14px;font-weight:800;color:#fff;flex:0 0 auto}
+.plate-ctx b{font-size:13px}.plate-ctx small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.mrow{display:flex;align-items:center;width:100%;border:0;background:transparent;border-bottom:1px solid var(--line);padding:11px 2px;font-size:13px;text-align:left;gap:10px}
+.mrow .pm{width:32px;height:32px;border-radius:9px;font-size:12px;font-weight:800;color:#fff;display:grid;place-items:center;flex:0 0 auto}
+.mrow .pm.n3{font-size:9px}
+.mrow .mx{flex:1;min-width:0}.mrow .mx small{display:block;font-size:10px;color:var(--muted);margin-top:2px}
+.pal{display:flex;flex-wrap:wrap;gap:7px;margin-top:4px}
+.pal i{width:52px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:10px;font-style:normal;font-weight:700;color:#fff}
+.szrow{display:flex;align-items:flex-end;gap:18px;margin-top:6px}
+.szrow .szi{text-align:center;font-size:10px;color:var(--muted)}
+.szrow .szi .pm{margin:0 auto 5px;position:relative}
+/* ===== 任务B 逾期还款弹窗 ===== */
+.mb{background:rgba(18,31,48,.35);border-radius:16px;padding:60px 0 0;display:flex;align-items:flex-end;justify-content:center}
+.modal{width:100%;background:var(--surface);border-radius:24px 24px 0 0;padding:10px 18px 22px}
+.modal-handle{width:35px;height:4px;background:#d7dde6;border-radius:5px;margin:0 auto 15px}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.modal-header h2{font-size:18px;margin:0}
+.close-button{border:0;background:#f0f2f5;color:var(--muted);border-radius:50%;width:27px;height:27px;font-size:20px;line-height:1}
+.due-lead{font-size:11px;color:var(--muted);line-height:1.6;margin:0 0 13px}
+.due-list{display:flex;flex-direction:column;gap:9px}
+.due-item{display:flex;align-items:center;gap:11px;background:#fff7f7;border:1px solid #f0c9cc;border-radius:14px;padding:11px 12px}
+.due-item.soft{background:#fffaf2;border-color:#f2ddba}
+.bank-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:13px;font-weight:800;color:#fff;flex:0 0 auto}
+.bank-mark.blue{background:#3d76dc}.bank-mark.orange{background:#ed9a3d}.bank-mark.purple{background:#8b67d8}
+.due-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.due-name{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px}
+.due-badge{font-size:9px;font-weight:800;color:#fff;background:var(--red);border-radius:6px;padding:2px 6px}
+.due-badge.warn{background:#c98a1b}
+.due-meta{font-size:10px;color:#98707a}.due-item.soft .due-meta{color:#9a7c48}
+.due-right{text-align:right;flex:0 0 auto}
+.due-amt{font-size:15px;font-weight:800;color:#c7414d}
+.due-item.soft .due-amt{color:#b07414}
+.due-sub{font-size:10px;color:var(--muted);margin-top:2px}
+.due-total{display:flex;justify-content:space-between;align-items:center;background:var(--red-soft);border-radius:11px;padding:10px 12px;margin-top:12px;font-size:12px;color:#8c4b52}
+.due-total strong{font-size:15px;color:#c7414d}
+.primary-action{width:100%;border:0;background:var(--blue);color:#fff;border-radius:12px;padding:13px;font-size:13px;font-weight:700;margin-top:12px}
+.secondary-action{width:100%;border:1px solid var(--line);background:#f7f8fa;color:#6a7686;border-radius:12px;padding:12px;font-size:13px;font-weight:700;margin-top:9px}
+/* ===== 任务C 还款差额 ===== */
+.type-seg{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:6px 0 4px}
+.type-seg button{border:1px solid var(--line);background:#fff;border-radius:11px;padding:11px 4px;font-size:12px;font-weight:600;color:var(--muted)}
+.type-seg button.on{border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}
+.field-label{display:block;font-size:11px;color:var(--muted);margin:12px 0 0}
+.field-label .hint{color:#a2abb8;font-weight:400}
+.big-amount-input{width:100%;border:0;border-bottom:2px solid var(--blue);font-size:30px;font-weight:700;padding:6px 2px;color:var(--ink);background:transparent}
+.modal-input{width:100%;margin-top:6px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px;font:inherit;font-size:14px;color:var(--ink)}
+.diff-box{display:flex;align-items:center;gap:10px;background:var(--blue-soft);border:1px solid #cfe0ff;border-radius:12px;padding:11px 12px;margin-top:12px}
+.diff-box .dbi{width:28px;height:28px;border-radius:9px;background:#fff;color:var(--blue);display:grid;place-items:center;font-size:14px;font-weight:800;flex:0 0 auto}
+.diff-box .dbt{flex:1;min-width:0;font-size:11px;color:#33517f;line-height:1.6}
+.diff-box .dbt b{font-size:12px;color:var(--blue)}
+.sw{width:42px;height:25px;border-radius:13px;background:var(--blue);position:relative;flex:0 0 auto}
+.sw i{position:absolute;top:2px;right:2px;width:21px;height:21px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.sw.off{background:#d7dde6}.sw.off i{right:auto;left:2px}
+.flow-head{display:flex;align-items:center;justify-content:space-between;margin:0 2px 10px}
+.flow-head h3{font-size:14px;margin:0}.flow-head .flow-day{font-size:11px;color:var(--muted)}
+.flow-list{display:flex;flex-direction:column;gap:8px}
+.flow-item{display:flex;align-items:center;gap:11px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:11px 13px}
+.flow-ic{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;font-size:15px;flex:0 0 auto}
+.flow-ic.pay{background:var(--green-soft);color:var(--green)}
+.flow-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.flow-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+.flow-meta{font-size:10px;color:var(--muted)}
+.flow-amt{font-size:14px;font-weight:700}.flow-amt.pay{color:var(--green)}
+.diff-chip{font-size:9px;font-weight:700;color:var(--blue);background:var(--blue-soft);border-radius:6px;padding:2px 6px}
+.query-sum{display:flex;gap:10px;margin:0 0 10px}
+.query-sum div{flex:1;background:#f7f8fa;border-radius:12px;padding:11px 12px}
+.query-sum span{display:block;font-size:10px;color:var(--muted);margin-bottom:5px}
+.query-sum strong{font-size:15px}.query-sum .pay{color:var(--green)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>账务管家 · 设计稿</h1>
+<p class="lead">三项改动的界面预览：①码牌头像换成归属名并按名字上色 ②登录后逾期还款提醒弹窗 ③还款超出本期应还时把差额单独记进流水。<br>
+下面所有姓名、卡号、金额均为虚构示例。你上次的四个拍板都已并进本稿（详见文末），只剩「卡片列表逾期标红」是新增视觉 —— 看一眼没问题我就动正式页面（<code>app.js</code> / <code>styles.css</code>）。</p>
+
+<section class="sec">
+  <h2 class="sec-h">① 码牌头像：灰「码」字 → 归属名</h2>
+  <p class="sec-q">现在没用过的码牌左边全是灰底一个「码」字，一眼看过去分不出是谁的。改成<em>归属人名字</em>，同一个名字永远同一个颜色。</p>
+  <div class="row2">
+    <div class="col">
+      <span class="tag now">现在</span>
+      <div class="mock"><div class="plate-list">
+        <div class="plate"><span class="pm none">码</span>
+          <span class="plate-main"><span class="plate-name">星巴克门店码</span><span class="plate-owner">归属 <b>张三</b></span></span>
+          <span class="plate-right"><span class="way none">未使用</span><span class="plate-time">未使用</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm none">码</span>
+          <span class="plate-main"><span class="plate-name">便利店台卡</span><span class="plate-owner">归属 <b>李四</b></span></span>
+          <span class="plate-right"><span class="way none">未使用</span><span class="plate-time">未使用</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm ali">支</span>
+          <span class="plate-main"><span class="plate-name">前台码牌</span><span class="plate-owner">归属 <b>张三</b></span></span>
+          <span class="plate-right"><span class="way ali">支付宝</span><span class="plate-time">上次 08-24</span></span><span class="chevron">›</span></div>
+      </div></div>
+    </div>
+    <div class="col">
+      <span class="tag new">新版（主推）</span>
+      <div class="mock"><div class="plate-list">
+        <div class="plate"><span class="pm oc-brown">张三</span>
+          <span class="plate-main"><span class="plate-name">星巴克门店码</span><span class="plate-owner">归属 <b>张三</b></span></span>
+          <span class="plate-right"><span class="way ali">支付宝</span><span class="plate-time">上次 08-12</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm oc-magenta">李四</span>
+          <span class="plate-main"><span class="plate-name">便利店台卡</span><span class="plate-owner">归属 <b>李四</b></span></span>
+          <span class="plate-right"><span class="way wx">微信</span><span class="plate-time">上次 08-20</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm oc-green">王五</span>
+          <span class="plate-main"><span class="plate-name">后厨收款码</span><span class="plate-owner">归属 <b>王五</b></span></span>
+          <span class="plate-right"><span class="way none">未使用</span><span class="plate-time">未使用</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm oc-brown">张三</span>
+          <span class="plate-main"><span class="plate-name">前台码牌</span><span class="plate-owner">归属 <b>张三</b></span></span>
+          <span class="plate-right"><span class="way ali">支付宝</span><span class="plate-time">上次 08-24</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm none">?</span>
+          <span class="plate-main"><span class="plate-name">外卖打包码</span><span class="plate-owner">归属 <b>—</b></span></span>
+          <span class="plate-right"><span class="way none">未使用</span><span class="plate-time">未使用</span></span><span class="chevron">›</span></div>
+      </div></div>
+    </div>
+  </div>
+  <div class="row2" style="margin-top:20px">
+    <div class="col">
+      <span class="tag alt">备选 A2（未采用）：名字方块右下角挂渠道角标</span>
+      <div class="mock"><div class="plate-list">
+        <div class="plate"><span class="pm oc-brown">张三<i class="pm-badge ali">支</i></span>
+          <span class="plate-main"><span class="plate-name">星巴克门店码</span><span class="plate-owner">归属 <b>张三</b></span></span>
+          <span class="plate-right"><span class="way ali">支付宝</span><span class="plate-time">上次 08-12</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm oc-magenta">李四<i class="pm-badge wx">微</i></span>
+          <span class="plate-main"><span class="plate-name">便利店台卡</span><span class="plate-owner">归属 <b>李四</b></span></span>
+          <span class="plate-right"><span class="way wx">微信</span><span class="plate-time">上次 08-20</span></span><span class="chevron">›</span></div>
+        <div class="plate"><span class="pm oc-green">王五</span>
+          <span class="plate-main"><span class="plate-name">后厨收款码</span><span class="plate-owner">归属 <b>王五</b></span></span>
+          <span class="plate-right"><span class="way none">未使用</span><span class="plate-time">未使用</span></span><span class="chevron">›</span></div>
+      </div></div>
+    </div>
+    <div class="col" style="flex:1;min-width:300px">
+      <span class="tag new">10 色板（白字，按名字哈希落色）</span>
+      <div class="pal">
+        <i class="pm oc-blue">蓝</i><i class="pm oc-teal">青绿</i><i class="pm oc-orange">橙</i>
+        <i class="pm oc-purple">紫</i><i class="pm oc-red">红</i><i class="pm oc-cyan">青蓝</i>
+        <i class="pm oc-green">绿</i><i class="pm oc-magenta">洋红</i><i class="pm oc-brown">棕</i><i class="pm oc-slate">蓝灰</i>
+      </div>
+      <p class="note" style="margin-top:12px"><b>名字取几个字：</b>1~3 字整个显示（3 字自动缩到 12px），4 字及以上取前两字，没填归属显示灰底 <code>?</code>。<br>
+      <b>三处方块尺寸都要跟着改：</b>列表 42px、编辑弹层 34px、设置页码牌管理 32px。</p>
+      <div class="szrow">
+        <div class="szi"><span class="pm oc-brown" style="width:42px;height:42px;border-radius:13px;font-size:16px">张三</span>列表 42</div>
+        <div class="szi"><span class="pm oc-teal n3" style="width:42px;height:42px;border-radius:13px">欧阳娜</span>3 字 12px</div>
+        <div class="szi"><span class="pm oc-magenta" style="width:34px;height:34px;border-radius:10px;font-size:14px">李四</span>弹层 34</div>
+        <div class="szi"><span class="pm oc-green" style="width:32px;height:32px;border-radius:9px;font-size:12px">王五</span>管理 32</div>
+        <div class="szi"><span class="pm none" style="width:42px;height:42px;border-radius:13px;font-size:16px">?</span>未填归属</div>
+      </div>
+    </div>
+  </div>
+  <div class="row2" style="margin-top:20px">
+    <div class="col">
+      <span class="tag new">编辑弹层顶部（34px）</span>
+      <div class="mock" style="width:330px">
+        <div class="plate-ctx"><span class="pm oc-brown">张三</span>
+          <div><b>星巴克门店码</b><small>归属 张三 · 上次 08-12 支付宝</small></div></div>
+      </div>
+    </div>
+    <div class="col">
+      <span class="tag new">设置页 → 码牌管理（32px）</span>
+      <div class="mock" style="width:330px">
+        <div class="mrow"><span class="pm oc-brown">张三</span><span class="mx">星巴克门店码<small>归属 张三</small></span><span class="chevron">›</span></div>
+        <div class="mrow"><span class="pm oc-magenta">李四</span><span class="mx">便利店台卡<small>归属 李四</small></span><span class="chevron">›</span></div>
+        <div class="mrow"><span class="pm oc-teal n3">欧阳娜</span><span class="mx">外卖打包码<small>归属 欧阳娜</small></span><span class="chevron">›</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>颜色怎么定的：</b>不是按顺序发色，是拿名字算一个固定哈希再取色 —— 所以「张三」在任何设备、任何时候都是同一个棕色，新增或删掉别的码牌都不会让它变色。<br>
+  <b>一个提醒：</b>色板 10 色，归属人超过 10 个才可能两个人撞同色；撞了名字本身还写在方块里，认得出。原来那套 <code>markColor</code>（银行图标在用）我不直接复用 —— 它的乘数 31 对 10 取模退化了，实测「张三」和「三张」必然同色、分布也偏（卡方 21.4 超临界值 16.9），换成 FNV-1a 后分布卡方降到 7.6。<br>
+  <b>渠道信息不会丢：</b>左边方块让给名字后，支付宝/微信仍显示在右侧标签上，所以不用再往方块上塞角标 —— <b>已定用主推版，不采用备选 A2</b>（角标会压住 2 字方块右下角，反而更挤）。</p>
+</section>
+<section class="sec">
+  <h2 class="sec-h">② 登录后弹窗：过了还款日还没记到还款</h2>
+  <p class="sec-q">判据是<em>已经过了还款日</em>，而且这张卡在本期账单出来之后<em>没有记到一笔够数的还款</em>。输完密码进主界面时弹一次，「稍后还款」只压当天，明天打开继续提醒，一直到这笔还款被记上为止。</p>
+  <div class="row2">
+    <div class="col">
+      <span class="tag new">弹窗（登录后立即出现）</span>
+      <div class="mock mb">
+        <div class="modal">
+          <div class="modal-handle"></div>
+          <div class="modal-header"><h2>2 张卡要还款</h2><span class="close-button">×</span></div>
+          <p class="due-lead">这 2 张都过了还款日、还没记到够数的还款。右边是「还差多少」。点卡片可以直接记这笔还款。</p>
+          <div class="due-list">
+            <div class="due-item"><span class="bank-mark blue">招商</span>
+              <span class="due-main"><span class="due-name">招商 ·6688 <i class="due-badge">逾期 7 天</i></span>
+                <span class="due-meta">还款日 08-18 · 一直没记还款</span></span>
+              <span class="due-right"><span class="due-amt">¥4,800</span><span class="due-sub">本期应还</span></span></div>
+            <div class="due-item"><span class="bank-mark orange">交通</span>
+              <span class="due-main"><span class="due-name">交通 ·2301 <i class="due-badge">逾期 2 天</i></span>
+                <span class="due-meta">还款日 08-23 · 已还 ¥2,000，还差这些</span></span>
+              <span class="due-right"><span class="due-amt">¥2,800</span><span class="due-sub">应还 ¥4,800</span></span></div>
+          </div>
+          <div class="due-total"><span>加起来还要还</span><strong>¥7,600</strong></div>
+          <button class="secondary-action">稍后还款（今天不再提醒）</button>
+        </div>
+      </div>
+    </div>
+    <div class="col" style="flex:1;min-width:300px">
+      <span class="tag new">卡片列表：逾期卡一直标红，直到记上还款</span>
+      <div class="mock" style="width:100%"><div class="plate-list">
+        <div class="plate" style="border-color:#e79aa1;background:#fff4f4">
+          <span class="bank-mark blue">招商</span>
+          <span class="plate-main"><span class="plate-name">招商 ·6688 <i class="due-badge">逾期 7 天</i></span>
+            <span class="plate-owner">还款日 08-18 · 还差 <b>¥4,800</b></span></span>
+          <span class="plate-right"><span class="way none" style="background:var(--red-soft);color:#c7414d">待还款</span><span class="plate-time">账单日 08-03</span></span><span class="chevron">›</span></div>
+        <div class="plate">
+          <span class="bank-mark orange">建设</span>
+          <span class="plate-main"><span class="plate-name">建设 ·5120</span>
+            <span class="plate-owner">还款日 09-05 · 可用 <b>¥18,000</b></span></span>
+          <span class="plate-right"><span class="way none">正常</span><span class="plate-time">账单日 08-22</span></span><span class="chevron">›</span></div>
+      </div></div>
+      <p class="note"><b>已定：</b>今天到期的不再单独提醒（你卡片本来就有当天红色提示，弹窗再报一次是重复）；弹窗只列<b>已经逾期</b>的卡。<br>
+      <b>逾期标红一直留着：</b>弹窗点「稍后还款」关掉后，卡片列表里这张卡保持标红 +「逾期 N 天」，直到记上一笔够数的还款才自动恢复正常。</p>
+    </div>
+  </div>
+  <p class="note"><b>已定：「本期应还」按记录的流水周期算（原方案 ②）。</b>不新增字段、也不用「已用额度」倒推。<br>
+  &nbsp;&nbsp;<b>怎么算：</b>找到最近一次账单日结出的账单 —— 把「上一个账单日的次日 → 最近这个账单日当天」之间记录的消费加起来，再减去为这期已记的还款，就是本期应还／还差。账单日、还款日都用卡里已有的 <code>billDay</code>/<code>repayDay</code> 推，跟分期那套 <code>addMonthsClamped</code> 一致，短月自动夹到月末。<br>
+  &nbsp;&nbsp;<b>代价你认可：</b>口径准，但依赖流水记全 —— 有一笔消费忘了录，这个数就会偏小。它跟可用额度不同（可用是照银行 APP 的实数），本期应还是<b>拿 App 里的流水现算</b>、只用来判断「够不够数」和算差额。<br>
+  <b>放宽判据（你已同意）：</b>不按「单笔 ≥ 应还」那么严 —— 只要<b>单笔够数、或本期累计还款够数</b>，满足其一就算已还，免得分两笔还款（¥3,000 + ¥1,800）被误报逾期。</p>
+</section>
+<section class="sec">
+  <h2 class="sec-h">③ 还款还多了：差额单独记一笔「还款差额」</h2>
+  <p class="sec-q">本期应还 ¥4,800，实际还了 ¥5,000。多出来的 ¥200 拆成单独一条流水，描述写<em>还款差额</em>，这样账单是否还清、以及多存了多少，在流水里一眼看得出。</p>
+  <div class="row2">
+    <div class="col">
+      <span class="tag new">记一笔 → 还款（输入 5000 时实时提示）</span>
+      <div class="mock mb" style="padding-top:30px">
+        <div class="modal">
+          <div class="modal-handle"></div>
+          <div class="modal-header"><h2>招商 ·6688 记一笔</h2><span class="close-button">×</span></div>
+          <div class="type-seg"><button>消费</button><button class="on">还款</button></div>
+          <label class="field-label">金额</label>
+          <div class="big-amount-input">5000</div>
+          <div class="diff-box">
+            <span class="dbi">＋</span>
+            <span class="dbt">本期应还 <b>¥4,800</b>，超出 <b>¥200</b><br>会另记一笔「还款差额 ¥200」</span>
+            <span class="sw"><i></i></span>
+          </div>
+          <label class="field-label">备注 <span class="hint">不填默认「还款」</span></label>
+          <input class="modal-input" value="8 月账单还款">
+          <button class="primary-action">保存（拆成 2 条流水）</button>
+        </div>
+      </div>
+      <p class="note">开关关掉就照原样记一条 ¥5,000。开关状态记住上次选择。</p>
+    </div>
+    <div class="col" style="flex:1;min-width:320px">
+      <span class="tag new">保存后的流水</span>
+      <div class="mock" style="width:100%">
+        <div class="query-sum"><div><span>还款合计</span><strong class="pay">¥5,000</strong></div>
+          <div><span>其中差额</span><strong class="pay">¥200</strong></div></div>
+        <div class="flow-head"><h3>08-25 流水</h3><span class="flow-day">周二</span></div>
+        <div class="flow-list">
+          <div class="flow-item"><span class="flow-ic pay">↓</span>
+            <span class="flow-main"><span class="flow-title">还款差额 <i class="diff-chip">差额</i></span>
+              <span class="flow-meta">08-25 21:40 · 招商 ·6688 · 超出本期应还</span></span>
+            <span class="flow-amt pay">+¥200</span></div>
+          <div class="flow-item"><span class="flow-ic pay">↓</span>
+            <span class="flow-main"><span class="flow-title">8 月账单还款</span>
+              <span class="flow-meta">08-25 21:40 · 招商 ·6688 · 本期应还 ¥4,800</span></span>
+            <span class="flow-amt pay">+¥4,800</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>为什么非得拆开：</b>现在还款进额度那一步是 <code>可用 = min(总额度, 可用 + 还款额)</code>，多还的部分会被总额度顶住、在额度上看不出来。一条 ¥5,000 的流水既像"还清了"也像"多还了"，拆开之后「本期还清 ¥4,800 + 多存 ¥200」写在账上，跟银行对账时不用再回想。<br>
+  <b>拆开不会让额度算错：</b>先记 ¥4,800 再记 ¥200，和一次记 ¥5,000，算出来的可用额度<b>完全相同</b>（封顶的情况下两边都等于总额度，没封顶时两次相加就是全额），所以这只是账目呈现方式变了，额度口径一个数都不动。<br>
+  <b>不用改表：</b>差额那笔就是一条普通还款流水，描述写「还款差额」，流水列表按这个描述给它挂一个「差额」小标签。<code>transactions</code> 表不加字段、云同步不用改。<br>
+  <b>删除时：</b>两笔各自独立，删哪笔就只回滚那笔的额度（现有逻辑本来就这样）。要是你希望删主笔时连带删差额笔，那就得加一个关联字段，我倾向不加 —— 你可能只是想改其中一笔。</p>
+</section>
+<p class="lead" style="margin:0"><b>你的四个拍板都已并进上面：</b>①码牌用主推版（不采用 A2 角标）；②弹窗只报「已逾期」、去掉「今天到期」那行，逾期卡在列表里保留标红直到记上还款；②本期应还按记录的流水周期算；判据放宽（单笔或累计够数其一即可）已采纳。<br>
+唯一新增的视觉是「卡片列表逾期标红」那块 —— 你看一眼样子 OK，我就开始改 <code>app.js</code> 和 <code>styles.css</code>（三项一起做）。</p>
+
+</div>
+</body>
+</html>

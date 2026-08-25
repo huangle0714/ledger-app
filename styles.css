@@ -168,3 +168,45 @@ input,textarea,select{font-size:16px}
 .way-seg button.ali .dot{background:#1677ff}.way-seg button.wx .dot{background:#07c160}
 .field-label .hint{color:#a2abb8;font-weight:400}
 .sort-row small{display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:2px}
+
+/* ---------- 码牌归属名配色 / 逾期还款提醒 / 还款差额(整块追加在文件末尾) ----------
+   必须放最后:.pm.n3 和 .plate .pm 的优先级同为 (0,2,0),靠顺序取胜,提前放会被字号覆盖。 */
+.pm.oc-blue{background:#3d76dc}.pm.oc-teal{background:#27a992}.pm.oc-orange{background:#ed9a3d}
+.pm.oc-purple{background:#8b67d8}.pm.oc-red{background:#dc626c}.pm.oc-cyan{background:#2b8fbf}
+.pm.oc-green{background:#4f9e46}.pm.oc-magenta{background:#c8579f}.pm.oc-brown{background:#a3743f}
+.pm.oc-slate{background:#5a7d9a}
+.pm.n3{font-size:12px;letter-spacing:-.5px}
+.plate-ctx .pm.n3{font-size:10px;letter-spacing:-.5px}
+/* 删除码牌那一行的方块原来靠 app.js 的行内样式撑,改成归属名后行内样式已去掉,尺寸在这里给 */
+.pick-row .pm{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff;flex:0 0 auto}
+.pick-row .pm.n3{font-size:9px;letter-spacing:-.5px}
+
+/* 卡片列表:逾期标红,和已有的 .due-today(今日还款,浅红)分开,红得更实一点 */
+.card-item.overdue{border-color:#e79aa1;background:#fff1f2;box-shadow:0 4px 14px rgba(223,93,103,.2)}
+.late-badge{font-size:9px;font-weight:800;color:#fff;background:#c8323f;border-radius:6px;padding:2px 7px;letter-spacing:.02em;margin-left:6px}
+.card-due.late{color:#c8323f;font-weight:700}
+
+/* 登录后的逾期提醒弹窗 */
+.due-lead{font-size:12px;line-height:1.6;color:var(--muted);margin:-4px 0 10px}
+.due-list{display:flex;flex-direction:column;gap:8px}
+.due-item{display:flex;align-items:flex-start;gap:10px;border:1px solid #f0b3b8;background:#fff6f6;border-radius:13px;padding:11px 12px;cursor:pointer}
+.due-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.due-name{font-size:13px;font-weight:800;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.due-badge{font-style:normal;font-size:9px;font-weight:800;color:#fff;background:#c8323f;border-radius:6px;padding:2px 6px}
+.due-meta{font-size:11px;color:var(--muted);line-height:1.5}
+.due-right{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:2px}
+.due-amt{font-size:15px;font-weight:800;color:#c8323f}
+.due-sub{font-size:10px;color:var(--muted)}
+.due-total{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:11px 12px;background:#f7f8fa;border:1px solid var(--line);border-radius:13px;font-size:12px;color:var(--muted)}
+.due-total strong{font-size:15px;color:#c8323f}
+
+/* 记还款时的差额提示 */
+.diff-box{display:flex;align-items:center;gap:10px;margin-top:8px;padding:10px 12px;background:#f4f8ff;border:1px solid #cfe0ff;border-radius:12px}
+.diff-box.hide{display:none}
+.dbi{flex:1;min-width:0;font-size:12px;color:#2a4d8f;line-height:1.5}
+.dbi b{font-weight:800}
+.dbt{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.sw{flex:0 0 auto;width:40px;height:24px;border-radius:12px;background:var(--blue);position:relative;cursor:pointer;transition:background .15s}
+.sw::after{content:'';position:absolute;top:2px;left:18px;width:20px;height:20px;border-radius:10px;background:#fff;transition:left .15s}
+.sw.off{background:#ccd3dd}.sw.off::after{left:2px}
+.diff-chip{font-style:normal;display:inline-block;margin-left:6px;font-size:9px;font-weight:800;color:#fff;background:var(--blue);border-radius:5px;padding:1px 5px;vertical-align:1px}
