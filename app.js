@@ -912,10 +912,26 @@ async function dueMarkPaid() {
   if (!left.length) { closeM(); return; }
   dueRows = left; renderDueBody();
 }
+/* modify by huangle 日期:2026-08-25 「稍后还款」点下去当天就不再提醒,可当天想再看一眼却没有入口。
+   带 ?due=1 打开即忽略当天的压制、强制判一次(和 index.html 的 ?diag=1 一个路子,零界面改动),
+   并且把「到底是哪一道挡住了」用 toast 说出来 —— 卡片红标由 overdueOf 出,弹窗由这里的四道门管,
+   两者不同源,光看红标分不清是被压制了还是判定认为不欠了。
+   typeof 兜一道:Node 断言脚本里没有 location,别让它在这儿炸。 */
+function dueForced() {
+  try { return typeof location !== 'undefined' && /(\?|&)due=1/.test(String(location.search || '')); }
+  catch (e) { return false; }
+}
 function maybeShowOverdueAlert() {
-  if (!unlocked || dueSnoozed()) return;
-  const list = overdueCards(); if (!list.length) return;
-  if (document.getElementById('mb').classList.contains('show')) { pendingDueAlert = true; return; }
+  const force = dueForced();
+  if (!unlocked) { if (force) toast('诊断:还没解锁'); return; }
+  const list = overdueCards();                             /* 走 overdueOf 缓存,提前算一次不费什么 */
+  if (!list.length) { if (force) toast('诊断:一张逾期卡都没有(判定认为不欠了)'); return; }
+  if (dueSnoozed() && !force) return;                      /* 不带 ?due=1 时行为与原来一字不差 */
+  if (document.getElementById('mb').classList.contains('show')) {
+    pendingDueAlert = true;
+    if (force) toast('诊断:已有别的弹层占着,关掉它就会补弹');
+    return;
+  }
   showOverdueAlert(list);
 }
 
