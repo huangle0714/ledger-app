@@ -224,3 +224,5 @@ input,textarea,select{font-size:16px}
 .sw::after{content:'';position:absolute;top:2px;left:18px;width:20px;height:20px;border-radius:10px;background:#fff;transition:left .15s}
 .sw.off{background:#ccd3dd}.sw.off::after{left:2px}
 .diff-chip{font-style:normal;display:inline-block;margin-left:6px;font-size:9px;font-weight:800;color:#fff;background:var(--blue);border-radius:5px;padding:1px 5px;vertical-align:1px}
+/* modify by huangle 日期:2026-08-25 limitAmount=0 的流水用淡蓝小标,和实心蓝的「差额」区分开 */
+.diff-chip.soft{background:var(--blue-soft);color:var(--blue)}

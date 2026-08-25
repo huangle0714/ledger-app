@@ -15,6 +15,8 @@ const MARKS = ['blue', 'orange', 'purple', 'teal', 'red'];
 const OWNER_COLORS = ['blue', 'teal', 'orange', 'purple', 'red', 'cyan', 'green', 'magenta', 'brown', 'slate'];
 const DUE_SNOOZE_KEY = 'ledger-due-snooze';   // 逾期弹窗「稍后还款」只压当天,不进数据库
 const DIFF_SPLIT_KEY = 'ledger-diff-split';   // 还款差额是否拆两笔,记住上次选择
+/* modify by huangle 日期:2026-08-25 逾期弹窗「可用额度我已经自己改好了」开关,记住上次选择,默认关(=原行为) */
+const PAID_NOLIMIT_KEY = 'ledger-paid-nolimit';
 const titles = { home: '总览', cards: '我的卡片', plates: '码牌', settings: '设置' };
 
 let SQL = null;      // sql.js 模块
@@ -687,10 +689,13 @@ function flowItemHTML(tx, tap) {
   /* 还款差额没有专门的关联字段(两笔都是普通还款,对可用额度的影响与合成一笔完全等价),
      只按备注认出来加个「差额」小标,方便对账时看出这笔是超出本期应还的部分。 */
   const isDiff = isPay && String(tx.note || '') === '还款差额';
+  /* modify by huangle 日期:2026-08-25 limitAmount 显式为 0 的流水加个淡蓝小标,
+     免得过两个月分不清这笔到底动没动额度(占用额度型分期的 limitAmount 是手续费,非 0,不会挂这个标)。 */
+  const noLim = tx.limitAmount != null && tx.limitAmount !== '' && Number(tx.limitAmount) === 0;
   return `<div class="flow-item ${tap ? 'tap' : ''}" ${tap ? `onclick="confirmDelTx(${tx.id})"` : ''}>` +
     `<span class="flow-ic ${k}">${isPay ? '↓' : '↑'}</span>` +
-    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}${isDiff ? '<i class="diff-chip">差额</i>' : ''}</span>` +
-    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}${isDiff ? ' · 超出本期应还' : ''}</span></span>` +
+    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}${isDiff ? '<i class="diff-chip">差额</i>' : ''}${noLim ? '<i class="diff-chip soft">额度 ¥0</i>' : ''}</span>` +
+    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}${isDiff ? ' · 超出本期应还' : ''}${noLim ? ' · 未改可用额度' : ''}</span></span>` +
     `<span class="flow-amt ${k}">${signed(amt)}</span></div>`;
 }
 /* ---------- 码牌页(替换原「还款」页) ---------- */
@@ -846,11 +851,18 @@ function duePickAll() {
   duePicked = full ? new Set() : new Set(dueRows.map(x => x.card.id));
   renderDueBody();
 }
+/* modify by huangle 日期:2026-08-25 「可用额度我已经自己改好了」
+   打开后这批还款只记流水解除逾期,可用额度一分不动(靠 transactions.limitAmount=0,列早就在库里)。
+   默认关 = 原来的行为;开着时按钮文案追加「· 不动额度」,按下去之前一定看得见。
+   状态存 localStorage 不入库:这是「我习惯先手改额度」这台设备的用法,不该跟着同步跑到别的设备。 */
+function paidNoLimitOn() { return localStorage.getItem(PAID_NOLIMIT_KEY) === '1'; }
+function togglePaidNoLimit() { localStorage.setItem(PAID_NOLIMIT_KEY, paidNoLimitOn() ? '0' : '1'); renderDueBody(); }
 function renderDueBody() {
   const list = dueRows;
   const total = money2(list.reduce((a, x) => a + Number(x.remain || 0), 0));
   const pick = list.filter(x => duePicked.has(x.card.id));
   const psum = money2(pick.reduce((a, x) => a + Number(x.remain || 0), 0));
+  const noLim = paidNoLimitOn();
   setModal(list.length + ' 张卡要还款',
     `<p class="due-lead">这 ${list.length} 张都过了还款日、还没记到够数的还款。勾上已经还掉的卡,点下面的按钮就按「还差多少」各记一笔还款;点卡片名字那一片,还是照旧进卡片里自己记。</p>` +
     `<div class="pick-bar"><span class="pick-hint">${pick.length ? `已勾 ${pick.length} 张` : '勾选已经还掉的卡'}</span>` +
@@ -866,25 +878,36 @@ function renderDueBody() {
         `<span class="due-sub">${x.paid > 0.005 ? '应还 ' + yuan(x.due) : '本期应还'}</span></span></div>`;
     }).join('') + `</div>` +
     `<div class="due-total"><span>加起来还要还</span><strong>${yuan(total)}</strong></div>` +
+    `<div class="diff-box"><span class="dbi">可用额度<b>我已经自己改好了</b>` +
+    `<span class="dbt">${noLim ? '开着:只记流水解除逾期,<b>可用额度一分不动</b>' : `关着:记完把 ${yuan(psum || total)} 加回可用额度(原来的行为)`}</span></span>` +
+    `<span class="sw${noLim ? '' : ' off'}" id="dueNoLimSw" onclick="togglePaidNoLimit()"></span></div>` +
     (pick.length
-      ? `<button class="paid-btn" onclick="dueMarkPaid()">已还款 · 记 ${pick.length} 笔 ${yuan(psum)}</button>`
+      ? `<button class="paid-btn" onclick="dueMarkPaid()">已还款 · 记 ${pick.length} 笔 ${yuan(psum)}${noLim ? ' · 不动额度' : ''}</button>`
       : `<button class="paid-btn off" disabled>已还款(先勾选卡片)</button>`) +
     `<button class="secondary-action" onclick="snoozeDue()">稍后还款(今天不再提醒)</button>`);
 }
 /* 勾选后一键记账:每张卡记一笔真实还款(金额=界面上的「还差」,日期=今天,备注「还款」),
    和进卡片手动记一笔完全一样 —— 可用额度照样加回去,流水里看得到,记错了进卡片删掉就行。
-   金额恰好等于还差,不会触发「还款差额」拆分;日期是今天,落在本期还款窗口内,逾期随即解除。 */
+   金额恰好等于还差,不会触发「还款差额」拆分;日期是今天,落在本期还款窗口内,逾期随即解除。
+   modify by huangle 日期:2026-08-25 开关打开时多传 limitAmount=0:
+   金额照记(逾期与「本期已还」都按 amount 算,照样解除),但 applyToAvailable 走 txLimitAmount 拿到 0
+   ⇒ 可用额度一分不动;删除走的是同一个取值函数,所以删掉也不会动额度,比不带这一位安全。 */
 async function dueMarkPaid() {
   if (dueSaving) return;                                 /* 连点两次会记成两笔,这里挡住 */
   const pick = dueRows.filter(x => duePicked.has(x.card.id) && Number(x.remain) > 0.005);
   if (!pick.length) return;
+  const noLim = paidNoLimitOn();
   dueSaving = true;
   try {
-    for (const x of pick) await addTransaction(x.card.id, { type: 'repayment', amount: money2(x.remain), date: todayStr(), note: '还款' });
+    for (const x of pick) await addTransaction(x.card.id, {
+      type: 'repayment', amount: money2(x.remain), date: todayStr(),
+      note: noLim ? '还款(额度已手改)' : '还款',
+      limitAmount: noLim ? 0 : null                      /* null 会被 addTransaction 当成「按全额扣」,即原行为 */
+    });
   } finally { dueSaving = false; }
   duePicked = new Set();
   renderAll();
-  toast(`已记 ${pick.length} 笔还款`);
+  toast(`已记 ${pick.length} 笔还款${noLim ? '(未改额度)' : ''}`);
   const left = overdueCards();                           /* 记完重算:全还完就关掉,还有剩的只留没勾的 */
   if (!left.length) { closeM(); return; }
   dueRows = left; renderDueBody();
