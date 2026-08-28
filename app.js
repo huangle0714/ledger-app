@@ -29,7 +29,11 @@ let bootDone = null; // boot() 那一次的 Promise(它内部吞了异常,await 
 let bootErr = '';    // 初始化失败的真实原因,登录界面和 toast 都要能说出来
 let loggingIn = false; // 正在等库打开,挡住重复登录
 let sortKey = 'repayDay';
-let plateSort = 'desc';   // 码牌按上次使用时间:desc=最近在前(默认), asc=最早在前
+/* modify by huangle 日期:2026-08-28 默认从 desc 改成 asc(最早在前)。
+   未使用(空时间)的码牌仍然沉底:sortedPlates 里 !av return 1 与排序方向无关,asc/desc 两边都成立,
+   所以改默认值不会把「未使用」顶到最前面。index.html 里 #plateSortName 的初始文案要跟着改,
+   否则 renderPlates() 跑之前会闪一下旧文案。 */
+let plateSort = 'asc';    // 码牌按上次使用时间:asc=最早在前(默认), desc=最近在前
 let plateFilter = 'all';  // all / ali(支付宝) / wx(微信)
 let dirty = localStorage.getItem(SYNC_DIRTY_KEY) === '1'; // 本地有未同步改动
 let autoSyncTimer = null;

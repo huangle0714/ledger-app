@@ -9,8 +9,8 @@
 <title>开发系统</title>
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="apple-touch-icon" href="./icon.svg" />
-<link rel="stylesheet" href="./styles.css?v=20260825f" />
-<link rel="stylesheet" href="./pwa-overrides.css?v=20260825f" />
+<link rel="stylesheet" href="./styles.css?v=20260828a" />
+<link rel="stylesheet" href="./pwa-overrides.css?v=20260828a" />
 </head>
 <body>
 
@@ -42,7 +42,7 @@
 </section>
 
 <section class="page" data-page="plates">
-<div class="section-heading"><div><p class="eyebrow">收款码牌</p><h2>我的码牌</h2></div><button class="sort-trigger" onclick="openPlateSort()">排序:<span id="plateSortName">最近在前</span> ⌄</button></div>
+<div class="section-heading"><div><p class="eyebrow">收款码牌</p><h2>我的码牌</h2></div><button class="sort-trigger" onclick="openPlateSort()">排序:<span id="plateSortName">最早在前</span> ⌄</button></div>
 <div class="plate-filter" id="plateFilter"><span class="plate-count" id="plateCount">共 0 个</span><span class="pf-btns"><button class="on" data-f="all" onclick="setPlateFilter('all')">全部</button><button data-f="ali" onclick="setPlateFilter('ali')">支付宝</button><button data-f="wx" onclick="setPlateFilter('wx')">微信</button></span></div>
 <div class="plate-list" id="plateList"></div>
 </section>
@@ -123,7 +123,7 @@ if (/(\?|&)diag/.test(location.search)) {
 
 <script src="./vendor/sql-wasm.js"></script>
 <script src="./seed-data.js"></script>
-<script src="./app.js?v=20260825f"></script>
+<script src="./app.js?v=20260828a"></script>
 <script>
 // 已切换为普通联网网页：不再注册 Service Worker，也不依赖离线缓存。
 // 清理手机上旧版本留下的 Service Worker 和 Cache Storage，避免继续显示旧页面。
