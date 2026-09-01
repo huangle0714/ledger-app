@@ -335,7 +335,41 @@ function overdueOf(c) {
   odCache.set(c.id, v);
   return v;
 }
-function resetOverdueCache() { odCache = new Map(); odCacheKey = ''; }
+function resetOverdueCache() { odCache = new Map(); odCacheKey = ''; needCache = new Map(); needCacheKey = ''; }
+/* modify by huangle 日期:2026-09-01
+   卡片列表右侧那行要显示的「本期还差」。判据三条,顺序有讲究:
+   ① 缺账单日或还款日 ⇒ 返回 null,算不出周期就别硬凑一个 0 出来,这行退回原来的「· 待还款/已还清」;
+   ② 可用额度已经回满 ⇒ 一律 0。这是把 overdueInfo 第一行那道门抄过来:不抄的话,
+      那些「额度我自己手改回满了、流水没补齐」的卡会一边不判逾期、一边显示还差几千,自己跟自己打架;
+   ③ 其余取 dueToRepay().remain —— 逾期那期优先,没逾期就是当期,它本身已经是
+      min(本期未还, 全库欠款余额) 的净额,所以叫「还差」而不是「应还」(应还是账单原额,在卡片详情里)。
+   逾期卡走 overdueOf 拿缓存值,和 dueToRepay 第一行调的 overdueInfo 是同一个结果,省一次全流水扫描。
+   ★ dueToRepay 本身一个字没动:记流水那边算「还款差额」还是老口径,这次只加显示。
+   缓存键与 overdueOf 相同 (日期, changeVersion):判一次要翻整张流水,一轮渲染每张卡只算一次。 */
+let needCache = new Map(), needCacheKey = '';
+function cardNeed(c) {
+  const key = todayStr() + '#' + changeVersion;
+  if (key !== needCacheKey) { needCache = new Map(); needCacheKey = key; }
+  if (needCache.has(c.id)) return needCache.get(c.id);
+  let v;
+  if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) v = null;
+  else if (Number(c.available) >= Number(c.total) - 0.01) v = 0;
+  else {
+    const late = overdueOf(c);
+    if (late) v = Math.max(0, money2(late.remain));
+    else {
+      /* 走到这里说明不逾期,那就是当期。这里不调 dueToRepay:它第一行还要再判一次逾期
+         (而且是没缓存的 overdueInfo),等于把整张流水白扫一遍 —— 逾期结论上面 overdueOf
+         已经出过了。取的还是 dueToRepay 非逾期分支同一个 cycleDue().need,一个数不差。 */
+      const ref = todayStr(), bill = lastBillDate(c, ref);
+      v = bill ? Math.max(0, money2(cycleDue(c, bill, ref).need)) : 0;
+    }
+  }
+  needCache.set(c.id, v);
+  return v;
+}
+/* 可用额度是否已经回满 —— 只用来在卡片详情里给「还差 ¥0」补一句由头,免得四行数字互相矛盾 */
+function limitBackFull(c) { return Number(c.available) >= Number(c.total) - 0.01; }
 /* 逾期的一律排最前面(四种排序都置顶),逾期组内按逾期天数从多到少;
    非逾期的那些卡相对顺序一点不动 —— 只做一次分流,不重排。 */
 function overdueFirst(rows) {
@@ -654,13 +688,24 @@ function cardItemHTML(c) {
   /* 逾期优先于「今日还款」,一张卡只挂一个标;这里必须用 late.repay(过去那个还款日),
      getEffectiveRepayDate 永远返回未来日期,拿它显示会说成还没到期。 */
   const late = overdueOf(c);
+  /* modify by huangle 日期:2026-09-01
+     A1:把「本期还差」摆到原来「待还款」的位置 —— 行数不变、卡片不加高,
+     顺便把这一行缩窄(「· 待还款」比「· 还差 ¥0」宽),左边那行姓名/卡种就不折行了。
+     ★ 判定逻辑一个字没动:还款日当天卡片照旧红底 + 「今日还款」角标,
+       只是这行显式写出「还差 ¥0」告诉你不用管 —— 所以颜色上「还差 0」这一档压过「今日还款」的红。
+     颜色优先级:逾期(暗红粗) > 还差 0(绿) > 今日还款(红粗) > 待还(橙)。
+     缺账单日或还款日的卡算不出账单周期,need 为 null,整行退回原来的「· 待还款/已还清」写法。 */
+  const need = cardNeed(c);
+  const dueCls = late ? 'late' : (need === null ? (status === '已还清' ? 'ok' : '') : (need <= 0 ? 'ok' : (dueToday ? 'today' : '')));
+  const dueTxt = late ? `还款 ${late.repay} · 还差 ${yuan(late.remain)}`
+    : `${due ? '还款 ' + due : esc(c.repayDay || '')} · ${need === null ? status : '还差 ' + yuan(need)}`;
   return `<button class="card-item ${late ? 'overdue' : (dueToday ? 'due-today' : '')}" onclick="openCard(${c.id})">` +
     `<span class="card-top"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
     `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${late ? `<span class="late-badge">逾期 ${late.days} 天</span>` : (dueToday ? '<span class="today-badge">今日还款</span>' : '')}</strong>` +
     `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span></span>` +
     `<span class="card-right"><strong class="card-avail">可用 ${yuan(c.available)}</strong>` +
     `<span class="card-amount">已用 ${yuan(used)}</span>` +
-    `<span class="card-due ${late ? 'late' : (dueToday ? 'today' : (status === '已还清' ? 'ok' : ''))}">${late ? `还款 ${late.repay} · 还差 ${yuan(late.remain)}` : `${due ? '还款 ' + due : esc(c.repayDay || '')} · ${status}`}</span>` +
+    `<span class="card-due ${dueCls}">${dueTxt}</span>` +
     `${c.billDay ? `<span class="card-bill">账单 ${esc(c.billDay)}</span>` : ''}</span>` +
     `<span class="chevron">›</span></span>` +
     `<span class="card-fees">${cardFeeLines(c.id)}${cardInstLine(c.id)}</span></button>`;
@@ -979,6 +1024,34 @@ function maybeShowOverdueAlert() {
 }
 
 /* ---------- 卡片详情 ---------- */
+/* modify by huangle 日期:2026-09-01
+   卡片详情里的「本期」四行。四个数全部出自现成的 cycleDue(),不新增字段、不改任何算法:
+     本期应还 = 本期账单窗口内的消费合计(账单原额,不减已还);
+     本期已还 = 上一个还款日之后记的还款合计;
+     本期还差 = 净额 min(本期未还, 全库欠款余额),与卡片列表上那个数同源同门;
+     账单周期 = (上一账单日, 最近账单日]。
+   ★ 写出账单周期是这四行里最要紧的一条:「我 8 月记的消费为什么不算 8 月这期」看一眼就自解了。
+   起点显示成上一账单日的「次日」——窗口是左开右闭,直接印上一账单日会让人以为那天的消费也算进来。
+   额度已回满时还差按 0 显示(与列表同一道门),并补一句由头,否则「应还 ¥4,280 / 还差 ¥0」看着像算错。
+   缺账单日或还款日就整段不输出,免得摆一排「—」。 */
+function cardCycleRowsHTML(c) {
+  if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return '';
+  const ref = todayStr(), bill = lastBillDate(c, ref);
+  if (!bill) return '';
+  const cyc = cycleDue(c, bill, ref);
+  const full = limitBackFull(c);
+  /* 逾期卡的坑:列表那行显示的是「逾期那一期」的还差,这四行讲的是「本期」,两个数常常不一样
+     (逾期 ¥2,100 的卡点进来可能看到「本期还差 ¥0」)。不新增行,只在这一格里点出来,
+     判据是两期的还款日不同 —— 相同就说明 overdueInfo 找到的正是当期,那是同一笔钱,不能说「另有」。
+     额度回满时 overdueOf 必然为 null(同一道门),所以这两句由头不会同时出现。 */
+  const lt = overdueOf(c);
+  const otherLate = !full && lt && lt.repay !== cyc.repay ? lt.remain : 0;
+  const from = fmtDate(new Date(parseDate(cyc.prevBill).getTime() + 86400000));
+  return `<div class="detail-row"><span>本期应还</span><strong>${yuan(cyc.due)}</strong></div>` +
+    `<div class="detail-row"><span>本期已还</span><strong>${yuan(cyc.paid)}</strong></div>` +
+    `<div class="detail-row"><span>本期还差</span><strong>${yuan(full ? 0 : cyc.need)}${full && cyc.need > 0.01 ? ' · 额度已回满' : (otherLate ? ' · 另有逾期 ' + yuan(otherLate) : '')}</strong></div>` +
+    `<div class="detail-row"><span>账单周期</span><strong>${esc(from)} ~ ${esc(cyc.bill)}</strong></div>`;
+}
 function openCard(id) {
   const c = getCard(id); if (!c) return;
   const used = cardUsed(c), pct = c.total ? Math.min(100, used / c.total * 100) : 0;
@@ -994,6 +1067,7 @@ function openCard(id) {
     instEntryHTML(id) +
     `<div class="annual-fee" onclick="openFees(${id})"><span class="af-icon">¥</span><span class="af-body"><span class="af-title">年费 · ${feeState}</span><span class="af-sub">点击查看/管理年费规则 ›</span></span><span class="af-state">${fees.length ? '查看' : '添加'}</span></div>` +
     `<div class="detail-row"><span>还款日</span><strong>${esc(getEffectiveRepayDay(c))}</strong></div>` +
+    cardCycleRowsHTML(c) +
     `<div class="detail-row"><span>状态</span><strong>${cardStatus(c)}</strong></div>` +
     `<div class="flow-head" style="margin-top:16px"><h3>最近流水</h3></div>` +
     `<div class="flow-list">${tx.length ? tx.map(t => flowItemHTML(t, true)).join('') : '<div class="flow-empty">暂无流水,点下方记一笔</div>'}</div>` +
