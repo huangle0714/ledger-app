@@ -233,6 +233,13 @@ function getEffectiveRepayDate(s, ref = todayStr()) {
 }
 function getEffectiveRepayDay(c) { const d = getEffectiveRepayDate(c.repayDay); return d ? `${getRepayMode(c.repayDay)}：${d}` : (c.repayDay || '—'); }
 function isRepayOn(c, dateStr) { return getEffectiveRepayDate(c.repayDay) === dateStr; }
+/* modify by huangle 日期:2026-09-01 还款日还差几天(纯日期减法,不碰任何业务判据)
+   getEffectiveRepayDate 返回的永远是「今天或以后」的第一个还款日 ⇒ 结果恒 >= 0,今天到期即 0 */
+function daysToRepay(c) {
+  const due = getEffectiveRepayDate(c.repayDay);
+  if (!due) return null;
+  return Math.round((parseDate(due) - parseDate(todayStr())) / 86400000);
+}
 function isBillOn(c, dateStr) { const bd = parseBillDay(c.billDay); if (!bd) return false; return parseDate(dateStr).getDate() === bd; }
 
 /* ---------- 逾期还款判定 ----------
@@ -696,12 +703,22 @@ function cardItemHTML(c) {
      颜色优先级:逾期(暗红粗) > 还差 0(绿) > 今日还款(红粗) > 待还(橙)。
      缺账单日或还款日的卡算不出账单周期,need 为 null,整行退回原来的「· 待还款/已还清」写法。 */
   const need = cardNeed(c);
-  const dueCls = late ? 'late' : (need === null ? (status === '已还清' ? 'ok' : '') : (need <= 0 ? 'ok' : (dueToday ? 'today' : '')));
+  /* modify by huangle 日期:2026-09-01
+     还款日临近 3 天 ⇒ 整卡橙(A1),与「今日还款」的红那一套对称。
+     ★ 只加一档显示,业务判据一个字没动。soon 生效的位置**恰好是原来 dueCls 返回 '' 的那两处**,
+       所以 soon 为 false 时下面这串三元与改之前逐字节等价。
+     ★ 不提醒已还清/还差 0 的卡(notClear 那道门):上一批刚拍板「¥0 就是不用管」,再套橙底会自相矛盾。
+     ★ dLeft >= 1 天然排除了今天到期(那时 dLeft === 0,走红色 today 档),不需要再判 dueToday。
+     缺账单日的卡 need 为 null,照样橙(还款日是明确的,算不出金额不影响「快到期了」)。 */
+  const dLeft = daysToRepay(c);
+  const notClear = late ? false : (need === null ? status !== '已还清' : need > 0);
+  const soon = notClear && dLeft !== null && dLeft >= 1 && dLeft <= 3;
+  const dueCls = late ? 'late' : (need === null ? (status === '已还清' ? 'ok' : (soon ? 'soon' : '')) : (need <= 0 ? 'ok' : (dueToday ? 'today' : (soon ? 'soon' : ''))));
   const dueTxt = late ? `还款 ${late.repay} · 还差 ${yuan(late.remain)}`
     : `${due ? '还款 ' + due : esc(c.repayDay || '')} · ${need === null ? status : '还差 ' + yuan(need)}`;
-  return `<button class="card-item ${late ? 'overdue' : (dueToday ? 'due-today' : '')}" onclick="openCard(${c.id})">` +
+  return `<button class="card-item ${late ? 'overdue' : (dueToday ? 'due-today' : (soon ? 'due-soon' : ''))}" onclick="openCard(${c.id})">` +
     `<span class="card-top"><span class="bank-mark ${mark}">${esc(shortName(c.bank))}</span>` +
-    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${late ? `<span class="late-badge">逾期 ${late.days} 天</span>` : (dueToday ? '<span class="today-badge">今日还款</span>' : '')}</strong>` +
+    `<span class="card-main"><strong class="card-name">${esc(c.bank || c.name || '卡片')}${late ? `<span class="late-badge">逾期 ${late.days} 天</span>` : (dueToday ? '<span class="today-badge">今日还款</span>' : (soon ? `<span class="soon-badge">${dLeft} 天后还款</span>` : ''))}</strong>` +
     `<span class="card-sub">${esc(c.user || '')}${c.user ? ' · ' : ''}${esc(c.name || '')} · 尾号 ${esc(c.tail || '----')}</span></span>` +
     `<span class="card-right"><strong class="card-avail">可用 ${yuan(c.available)}</strong>` +
     `<span class="card-amount">已用 ${yuan(used)}</span>` +

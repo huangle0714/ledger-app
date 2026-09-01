@@ -25,8 +25,13 @@ h1,h2,p{margin:0}h1{font-size:28px;letter-spacing:-.02em}h2{font-size:19px;lette
 .bank-mark.blue{background:#3d76dc}.bank-mark.orange{background:#ed9a3d}.bank-mark.purple{background:#8b67d8}.bank-mark.teal{background:#27a992}.bank-mark.red{background:#dc626c}
 .card-main{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}.card-name{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px}.card-sub{font-size:11px;color:var(--muted)}
 .today-badge{font-size:9px;font-weight:800;color:#fff;background:var(--red);border-radius:6px;padding:2px 7px;letter-spacing:.02em}
-.card-right{text-align:right;display:flex;flex-direction:column;gap:3px;min-width:0}.card-avail{font-size:13px;font-weight:700;color:var(--green)}.card-amount{font-size:12px;font-weight:600;color:#54606e}.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}.card-due.today{color:var(--red);font-weight:800}.card-bill{font-size:10px;color:var(--muted)}
+.card-right{text-align:right;display:flex;flex-direction:column;gap:3px;min-width:0}.card-avail{font-size:13px;font-weight:700;color:var(--green)}.card-amount{font-size:12px;font-weight:600;color:#54606e}.card-due{font-size:10px;color:var(--orange)}.card-due.ok{color:var(--green)}.card-due.today{color:var(--red);font-weight:800}.card-due.soon{color:var(--orange);font-weight:800}.card-bill{font-size:10px;color:var(--muted)}
 .card-item.due-today{border-color:#f0b3b8;background:#fff6f6;box-shadow:0 4px 14px rgba(223,93,103,.14)}
+/* modify by huangle 日期:2026-09-01 还款日临近 3 天:整卡橙,与上面「今日还款」的红那一套一一对应。
+   .card-due 的默认色本来就是 --orange,所以只改文字颜色跟普通待还卡分辨不出来,必须做到卡片级。
+   .soon-badge 照 .today-badge 写(不加 margin-left,间距靠 .card-name 的 gap:6px),别照 .late-badge。 */
+.card-item.due-soon{border-color:#f2cf9a;background:#fffaf2;box-shadow:0 4px 14px rgba(233,149,56,.14)}
+.soon-badge{font-size:9px;font-weight:800;color:#fff;background:var(--orange);border-radius:6px;padding:2px 7px;letter-spacing:.02em}
 .card-fees{margin-top:11px;padding-top:10px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:7px}
 .fee-line{display:flex;align-items:center;gap:8px;min-width:0}
 .fee-line .fi{width:22px;height:22px;border-radius:7px;background:var(--orange-soft);color:var(--orange);display:grid;place-items:center;font-size:11px;font-weight:800;flex:0 0 auto}
