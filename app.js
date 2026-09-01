@@ -225,11 +225,21 @@ function addMonthsClamped(d, m) { return dateWithDay(d.getFullYear(), d.getMonth
 function parseBillDay(s) { const m = String(s || '').match(/每月(\d{1,2})号/); return m ? Number(m[1]) : null; }
 function parseRepayDate(s) { const m = String(s || '').match(/\d{4}-\d{2}-\d{2}/); return m ? m[0] : null; }
 function getRepayMode(s) { return String(s || '').startsWith('顺延') ? '顺延' : '固定'; }
+/* modify by huangle 日期:2026-09-01 从原点一次性加月,不再逐月递推
+   旧写法是 while (d < r) d = addMonthsClamped(d, 1) —— 拿上一次被夹月截断的结果当下次基准,
+   于是原点 29/30/31 号的卡跨过 2 月就被永久钉在 28 号(原点 2026-01-29 算到 8 月会得 08-28)。
+   改成与 repayDateForBill / instPeriodDate 同一姿势:恒从原点 o 算 addMonthsClamped(o, k),
+   k 先按年月差估,再两向逼近取「最小的、日期 >= ref 的那个 k」。
+   addMonthsClamped(o, k) 对 k 严格单调递增(月份逐月推进,日只在月内被夹),所以逼近唯一收敛。
+   返回值恒 >= ref 这条不变量必须保住,daysToRepay 恒 >= 0 全靠它。 */
 function getEffectiveRepayDate(s, ref = todayStr()) {
   const orig = parseRepayDate(s); if (!orig) return null;
-  const r = parseDate(ref); let d = parseDate(orig);
-  while (d < r) d = addMonthsClamped(d, 1);
-  return fmtDate(d);
+  const r = parseDate(ref), o = parseDate(orig);
+  let k = Math.max(0, (r.getFullYear() - o.getFullYear()) * 12 + (r.getMonth() - o.getMonth())), g = 0;
+  while (addMonthsClamped(o, k) < r && g++ < 600) k += 1;
+  g = 0;
+  while (k > 0 && addMonthsClamped(o, k - 1) >= r && g++ < 600) k -= 1;
+  return fmtDate(addMonthsClamped(o, k));
 }
 function getEffectiveRepayDay(c) { const d = getEffectiveRepayDate(c.repayDay); return d ? `${getRepayMode(c.repayDay)}：${d}` : (c.repayDay || '—'); }
 function isRepayOn(c, dateStr) { return getEffectiveRepayDate(c.repayDay) === dateStr; }
