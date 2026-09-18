@@ -255,7 +255,7 @@ function isBillOn(c, dateStr) { const bd = parseBillDay(c.billDay); if (!bd) ret
 /* ---------- 逾期还款判定 ----------
    cards 表没有「本期应还」字段,按用户拍板的口径:用记录的流水周期现算。
    本期 = (上一个账单日, 最近一个账单日],本期应还 = 该窗口内的消费合计;
-   已还 = 上一个还款日之后记录的还款合计(上个还款日当天那笔是还上一期的,不算进来)。
+   已还 = 上一个还款日之后记录的还款合计(上个还款日当天那笔是还上一期的,不算进来;「还款差额」也不算,见 cycleDue)。
    所有周期日期都从原点用 addMonthsClamped 现算,绝不做「未来日期回退一月」——
    31 号的卡被夹到 2-28 再回退会永久漂成 1-28,和 instPeriodDate 是同一个坑。 */
 function lastBillDate(c, ref) {
@@ -277,7 +277,12 @@ function repayDateForBill(c, billDate) {
 /* 算一个账单周期。日期都是 YYYY-MM-DD,可以直接字符串比较。
    due/paid 按窗口算(用户拍板:本期应还＝本期账单窗口内的消费);
    owed 是全库跑一遍的欠款余额,只用来兜底压掉误报,理由见 overdueInfo。
-   还款归属是不重不漏的:落在 (上一还款日, 本期还款日] 的还款只算进这一期。 */
+   还款归属是不重不漏的:落在 (上一还款日, 本期还款日] 的还款只算进这一期。
+   modify by huangle 日期:2026-09-18 「还款差额」不算已还:用户只记大额消费、小额不记,
+   实际还款超出「还差」的那部分在记录世界里没有对应的消费,计入已还就会攒成溢缴款,
+   把之后的「还差」永远压成 0。按备注认出它(和 flowItemHTML 的「差额」小标同一判据),
+   历史差额笔无需迁移即自动生效;其余还款(含 limitAmount=0 的「额度已手改」)照常计入,
+   一键还清解除逾期靠的就是它们。 */
 function cycleDue(c, billDate, ref) {
   const bd = parseBillDay(c.billDay);
   const prevBill = dateWithDay(billDate.getFullYear(), billDate.getMonth() - 1, bd);
@@ -287,7 +292,7 @@ function cycleDue(c, billDate, ref) {
   getTx(c.id).forEach(t => {
     const d = String(t.date || ''); if (!d) return;
     const v = Number(t.amount || 0);
-    if (t.type === 'repayment') { if (d <= ref) allPaid += v; if (d > pr && d <= ref) paid += v; }
+    if (t.type === 'repayment') { const lv = String(t.note || '') === '还款差额' ? 0 : v; if (d <= ref) allPaid += lv; if (d > pr && d <= ref) paid += lv; }
     else { if (d <= b) allSpend += v; if (d > a && d <= b) due += v; }
   });
   due = money2(due); paid = money2(paid);
@@ -414,7 +419,7 @@ function txLimitAmount(tx) {
   return Number.isFinite(v) ? v : Number(tx.amount || 0);
 }
 /* money2 收尾:浮点相加会留下 8500.000000000002 这种尾巴,
-   Task C 把一笔还款拆成两笔时,「两笔之和」必须和「一笔」写出完全相同的可用额度。 */
+   还款拆成大额＋差额两笔时,大额笔入账、差额笔(limitAmount=0,加 0)必须和「只记大额一笔」写出完全相同的可用额度。 */
 function applyToAvailable(available, total, tx) {
   const amt = txLimitAmount(tx);
   if (tx.type === 'repayment') return money2(Math.min(total, available + amt));
@@ -763,16 +768,18 @@ function flowItemHTML(tx, tap) {
   const k = isPay ? 'pay' : 'out';
   const amt = (isPay ? 1 : -1) * Number(tx.amount || 0);
   const settle = isPay ? '' : ` · 到账 ${yuan(Number(tx.amount || 0) - getFeeAmount(tx))}`;
-  /* 还款差额没有专门的关联字段(两笔都是普通还款,对可用额度的影响与合成一笔完全等价),
-     只按备注认出来加个「差额」小标,方便对账时看出这笔是超出本期应还的部分。 */
+  /* 还款差额没有专门的关联字段,只按备注认出来加个「差额」小标。
+     modify by huangle 日期:2026-09-18 差额语义收紧为「只留档」:limitAmount=0 不动额度,
+     cycleDue 也不把它算进已还,副行改成「小额未记部分,不影响还差」;
+     小标统一叫「不动额度」——原来的「额度 ¥0」容易被读成这笔金额是 0。 */
   const isDiff = isPay && String(tx.note || '') === '还款差额';
   /* modify by huangle 日期:2026-08-25 limitAmount 显式为 0 的流水加个淡蓝小标,
      免得过两个月分不清这笔到底动没动额度(占用额度型分期的 limitAmount 是手续费,非 0,不会挂这个标)。 */
   const noLim = tx.limitAmount != null && tx.limitAmount !== '' && Number(tx.limitAmount) === 0;
   return `<div class="flow-item ${tap ? 'tap' : ''}" ${tap ? `onclick="confirmDelTx(${tx.id})"` : ''}>` +
     `<span class="flow-ic ${k}">${isPay ? '↓' : '↑'}</span>` +
-    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}${isDiff ? '<i class="diff-chip">差额</i>' : ''}${noLim ? '<i class="diff-chip soft">额度 ¥0</i>' : ''}</span>` +
-    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}${isDiff ? ' · 超出本期应还' : ''}${noLim ? ' · 未改可用额度' : ''}</span></span>` +
+    `<span class="flow-main"><span class="flow-title">${esc(tx.note || (isPay ? '还款' : '消费'))}${isDiff ? '<i class="diff-chip">差额</i>' : ''}${noLim ? '<i class="diff-chip soft">不动额度</i>' : ''}</span>` +
+    `<span class="flow-meta">${esc(shortName(card.bank))}${esc(card.tail || '')} · ${esc(tx.date)}${tx.time ? ' ' + esc(tx.time) : ''}${settle}${isDiff ? ' · 小额未记部分,不影响还差' : ''}${noLim && !isDiff ? ' · 未改可用额度' : ''}</span></span>` +
     `<span class="flow-amt ${k}">${signed(amt)}</span></div>`;
 }
 /* ---------- 码牌页(替换原「还款」页) ---------- */
@@ -1054,7 +1061,7 @@ function maybeShowOverdueAlert() {
 /* modify by huangle 日期:2026-09-01
    卡片详情里的「本期」四行。四个数全部出自现成的 cycleDue(),不新增字段、不改任何算法:
      本期应还 = 本期账单窗口内的消费合计(账单原额,不减已还);
-     本期已还 = 上一个还款日之后记的还款合计;
+     本期已还 = 上一个还款日之后记的还款合计(「还款差额」不计入,见 cycleDue);
      本期还差 = 净额 min(本期未还, 全库欠款余额),与卡片列表上那个数同源同门;
      账单周期 = (上一账单日, 最近账单日]。
    ★ 写出账单周期是这四行里最要紧的一条:「我 8 月记的消费为什么不算 8 月这期」看一眼就自解了。
@@ -1116,7 +1123,7 @@ function updateSettle() {
   } else box.classList.add('hide');
   updateDiff();
 }
-/* 还款金额超出「本期应还」时提示会另记一笔「还款差额」。
+/* 还款金额超出「本期应还」时提示拆分:大额入额度,差额只留档(不动额度、不算已还)。
    口径和卡片列表的逾期判定共用 dueToRepay:逾期就冲那期的还差,没逾期就冲当期的还差。 */
 function updateDiff() {
   const box = document.getElementById('diffBox'); if (!box) return;
@@ -1134,8 +1141,8 @@ function updateDiff() {
   box.classList.remove('hide');
   const on = diffSplitOn();
   document.getElementById('diffText').innerHTML =
-    `${d.days > 0 ? '本期还差' : '本期应还'} <b>${yuan(remain)}</b>,超出 <b>${yuan(extra)}</b>` +
-    `<span class="dbt">${on ? `会另记一笔「还款差额 ${yuan(extra)}」` : '关掉就只记 1 笔完整还款'}</span>`;
+    `大额 <b>${yuan(remain)}</b> 入额度 · 差额 <b>${yuan(extra)}</b> 只留档` +
+    `<span class="dbt">${on ? '差额是没记的小额消费,不动可用额度、不算已还' : '关掉就只记 1 笔完整还款(会动额度、算已还)'}</span>`;
   document.getElementById('diffSw').className = 'sw' + (on ? '' : ' off');
   if (save) save.textContent = on ? '保存(拆成 2 条流水)' : '保存流水';
 }
@@ -1160,14 +1167,16 @@ async function saveRecord(id) {
   if (amount <= 0) { toast('请输入金额'); return; }
   const date = val('recDate') || todayStr(), note = val('recNote');
   /* 拆两笔必须先算好本期还差:第一笔记进去之后 paid 就变了,再算会得到 0。
-     两笔都是普通还款、都不填 limitAmount,对 available 的影响和一笔完整还款完全等价
-     (还款是 min(total, a+x),a+due≤total 时可加,超了两边都顶到 total),所以拆分只影响账面呈现。 */
+     modify by huangle 日期:2026-09-18 差额笔语义收紧:大额笔(=本期还差)照常入额度、入统计;
+     差额笔 limitAmount=0 —— 用户只记大额消费,差额在记录世界里是「没记的小额消费」的对应还款,
+     入额度只会把 available 顶高、算已还只会把后面的「还差」压成 0(cycleDue 按备注把它排除)。
+     它只留档对账:流水里带「差额 · 不动额度」小标;删除走 reverseFromAvailable 同样按 0 反算,一来一回一致。 */
   const c = getCard(id);
   const d = (type === 'repayment' && diffSplitOn() && c) ? dueToRepay(c, date) : null;
   const remain = d ? d.remain : 0, extra = money2(amount - remain);
   if (d && remain > 0.005 && extra > 0.005) {
     await addTransaction(id, { type, amount: remain, date, note });
-    await addTransaction(id, { type, amount: extra, date, note: '还款差额' });
+    await addTransaction(id, { type, amount: extra, date, note: '还款差额', limitAmount: 0 });
     renderAll(); openCard(id); toast('已记 2 笔 · 差额 ' + yuan(extra));
     return;
   }
