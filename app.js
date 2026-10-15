@@ -275,35 +275,32 @@ function repayDateForBill(c, billDate) {
   return addMonthsClamped(o, k);
 }
 /* 算一个账单周期。日期都是 YYYY-MM-DD,可以直接字符串比较。
-   due/paid 按窗口算(用户拍板:本期应还＝本期账单窗口内的消费);
-   owed 是全库跑一遍的欠款余额,只用来兜底压掉误报,理由见 overdueInfo。
-   还款归属是不重不漏的:落在 (上一还款日, 本期还款日] 的还款只算进这一期。
-   modify by huangle 日期:2026-09-18 「还款差额」不算已还:用户只记大额消费、小额不记,
-   实际还款超出「还差」的那部分在记录世界里没有对应的消费,计入已还就会攒成溢缴款,
-   把之后的「还差」永远压成 0。按备注认出它(和 flowItemHTML 的「差额」小标同一判据),
-   历史差额笔无需迁移即自动生效;其余还款(含 limitAmount=0 的「额度已手改」)照常计入,
-   一键还清解除逾期靠的就是它们。 */
+   应还取账单窗口内的消费,已还取上一还款日之后、截至 ref 的真实还款;
+   逾期后补记的还款也计入,「还款差额」只留档、不算已还。
+   modify by huangle 日期:2026-10-15 还差统一按本期应还减本期已还。
+   不能再用全库消费减全库还款压低本期还差:旧消费可能未录入,但旧还款已有记录,
+   会把上一还款日用于结清上一期的钱再次抵扣本期,出现「已还 0,还差却变少」。
+   不从历史净额推断提前还款;limitAmount=0 的「额度已手改」真实还款仍照常计入。 */
 function cycleDue(c, billDate, ref) {
   const bd = parseBillDay(c.billDay);
   const prevBill = dateWithDay(billDate.getFullYear(), billDate.getMonth() - 1, bd);
   const a = fmtDate(prevBill), b = fmtDate(billDate);
   const pr = fmtDate(repayDateForBill(c, prevBill));
-  let due = 0, paid = 0, allSpend = 0, allPaid = 0;
+  let due = 0, paid = 0;
   getTx(c.id).forEach(t => {
     const d = String(t.date || ''); if (!d) return;
     const v = Number(t.amount || 0);
-    if (t.type === 'repayment') { const lv = String(t.note || '') === '还款差额' ? 0 : v; if (d <= ref) allPaid += lv; if (d > pr && d <= ref) paid += lv; }
-    else { if (d <= b) allSpend += v; if (d > a && d <= b) due += v; }
+    if (t.type === 'repayment') {
+      if (String(t.note || '') !== '还款差额' && d > pr && d <= ref) paid += v;
+    } else if (d > a && d <= b) due += v;
   });
   due = money2(due); paid = money2(paid);
-  const remain = Math.max(0, money2(due - paid)), owed = Math.max(0, money2(allSpend - allPaid));
-  return { bill: b, prevBill: a, repay: fmtDate(repayDateForBill(c, billDate)), due, paid, remain, owed, need: Math.min(remain, owed) };
+  const remain = Math.max(0, money2(due - paid));
+  return { bill: b, prevBill: a, repay: fmtDate(repayDateForBill(c, billDate)), due, paid, remain, need: remain };
 }
 /* 已经过了还款日、还没记到够数还款的卡。判据按用户要求放宽,宁可不报也不误报:
    缺账单日/还款日不判、额度已回满算已还清、本期没消费不判、算出来不差钱不判。
-   owed(全库欠款余额)这道闸是必须的:随手消费随手还的人,还款会落到上一期的窗口里,
-   只看窗口会天天误报;反过来不能用「本期有单笔≥应还就算还了」那种放宽——
-   正常人每月都在上一个还款日还掉整期账单,那笔钱会把本期的逾期永久压住,Task B 就废了。 */
+   金额直接使用 cycleDue 的周期还差,上一期的还款不能压低本期的逾期金额。 */
 function overdueInfo(c, ref = todayStr()) {
   if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
   if (Number(c.available) >= Number(c.total) - 0.01) return null;
@@ -363,8 +360,8 @@ function resetOverdueCache() { odCache = new Map(); odCacheKey = ''; needCache =
    ① 缺账单日或还款日 ⇒ 返回 null,算不出周期就别硬凑一个 0 出来,这行退回原来的「· 待还款/已还清」;
    ② 可用额度已经回满 ⇒ 一律 0。这是把 overdueInfo 第一行那道门抄过来:不抄的话,
       那些「额度我自己手改回满了、流水没补齐」的卡会一边不判逾期、一边显示还差几千,自己跟自己打架;
-   ③ 其余取 dueToRepay().remain —— 逾期那期优先,没逾期就是当期,它本身已经是
-      min(本期未还, 全库欠款余额) 的净额,所以叫「还差」而不是「应还」(应还是账单原额,在卡片详情里)。
+   ③ 其余取 dueToRepay().remain —— 逾期那期优先,没逾期就是当期,金额是
+      本期应还减本期已还,最低为 0(应还是账单原额,在卡片详情里)。
    逾期卡走 overdueOf 拿缓存值,和 dueToRepay 第一行调的 overdueInfo 是同一个结果,省一次全流水扫描。
    ★ dueToRepay 本身一个字没动:记流水那边算「还款差额」还是老口径,这次只加显示。
    缓存键与 overdueOf 相同 (日期, changeVersion):判一次要翻整张流水,一轮渲染每张卡只算一次。 */
@@ -1059,10 +1056,10 @@ function maybeShowOverdueAlert() {
 
 /* ---------- 卡片详情 ---------- */
 /* modify by huangle 日期:2026-09-01
-   卡片详情里的「本期」四行。四个数全部出自现成的 cycleDue(),不新增字段、不改任何算法:
+   卡片详情里的「本期」四行。金额和周期全部出自 cycleDue():
      本期应还 = 本期账单窗口内的消费合计(账单原额,不减已还);
      本期已还 = 上一个还款日之后记的还款合计(「还款差额」不计入,见 cycleDue);
-     本期还差 = 净额 min(本期未还, 全库欠款余额),与卡片列表上那个数同源同门;
+     本期还差 = max(0, 本期应还 - 本期已还),与卡片列表上那个数同源同门;
      账单周期 = (上一账单日, 最近账单日]。
    ★ 写出账单周期是这四行里最要紧的一条:「我 8 月记的消费为什么不算 8 月这期」看一眼就自解了。
    起点显示成上一账单日的「次日」——窗口是左开右闭,直接印上一账单日会让人以为那天的消费也算进来。
