@@ -38,7 +38,10 @@ let plateFilter = 'all';  // all / ali(支付宝) / wx(微信)
 let dirty = localStorage.getItem(SYNC_DIRTY_KEY) === '1'; // 本地有未同步改动
 let autoSyncTimer = null;
 let syncRunning = false;
-let syncAgain = false;
+let syncVerified = false, remoteSha, verifiedBackup = '';
+let databaseReplacing = false;
+let recordSaving = false;
+let pendingPersistence = 0;
 let changeVersion = 0;
 let unlocked = false; // 是否已通过密码进入(用于登录后再自动拉取)
 let lastCatchUp = 0;  // 本次打开自动补记了多少期分期
@@ -107,8 +110,15 @@ function idb() {
 async function idbSet(k, v) { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
 async function idbGet(k) { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readonly'); const q = t.objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
 /* ---------- SQL 查询封装 ---------- */
-function all(sql, params = []) { const s = db.prepare(sql); s.bind(params); const out = []; while (s.step()) out.push(s.getAsObject()); s.free(); return out; }
-function run(sql, params = []) { const s = db.prepare(sql); s.bind(params); s.step(); s.free(); }
+function all(sql, params = []) { return allFrom(db, sql, params); }
+function run(sql, params = []) { runOn(db, sql, params); }
+function runOn(target, sql, params = []) { const s = target.prepare(sql); try { s.bind(params); s.step(); } finally { s.free(); } }
+function ensureWritable() { if (databaseReplacing) throw new Error('正在恢复数据，请稍后再保存'); }
+function atomicDb(fn) {
+  db.exec('BEGIN');
+  try { const result = fn(); db.exec('COMMIT'); return result; }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+}
 function scalar(sql, params = []) { const r = all(sql, params); return r.length ? Object.values(r[0])[0] : null; }
 function nextId(table) { return (Number(scalar(`SELECT MAX(id) FROM ${table}`)) || 0) + 1; }
 
@@ -124,7 +134,7 @@ CREATE TABLE IF NOT EXISTS annual_fees(
 CREATE TABLE IF NOT EXISTS transactions(
   id INTEGER PRIMARY KEY, cardId INTEGER, date TEXT, time TEXT, createdAt TEXT,
   amount REAL NOT NULL DEFAULT 0, note TEXT, type TEXT, feeRate REAL,
-  limitAmount REAL, instId INTEGER, instPeriod INTEGER);
+  limitAmount REAL, instId INTEGER, instPeriod INTEGER, availableDelta REAL);
 CREATE TABLE IF NOT EXISTS installments(
   id INTEGER, cardId INTEGER, name TEXT, principal REAL NOT NULL DEFAULT 0,
   periods INTEGER NOT NULL DEFAULT 1, postedBase INTEGER NOT NULL DEFAULT 0,
@@ -149,13 +159,15 @@ function addCols(target, table, defs) {
 }
 function migrate(target) {
   target.exec(SCHEMA);
-  addCols(target, 'transactions', [['limitAmount', 'REAL'], ['instId', 'INTEGER'], ['instPeriod', 'INTEGER']]);
+  addCols(target, 'transactions', [['limitAmount', 'REAL'], ['instId', 'INTEGER'], ['instPeriod', 'INTEGER'], ['availableDelta', 'REAL']]);
   /* feeMode 空 = flat(等本等息),老数据行为一个数都不变 */
   addCols(target, 'installments', [['feeMode', 'TEXT'], ['monthRate', 'REAL']]);
 }
 
-function seedFrom(data) {
-  db.exec('BEGIN');
+function seedFrom(data, target = db) {
+  const run = (sql, params) => runOn(target, sql, params);
+  target.exec('BEGIN');
+  try {
   (data.cards || []).forEach(c => run(
     `INSERT INTO cards(id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
     [c.id, c.user, c.bank, c.name, c.tail, Number(c.total || 0), Number(c.fixed || 0), Number(c.temporary || 0), Number(c.available || 0), c.billDay, c.repayDay]));
@@ -163,9 +175,9 @@ function seedFrom(data) {
     `INSERT INTO annual_fees(id,cardId,name,chargeDate,requirement,status,note) VALUES(?,?,?,?,?,?,?)`,
     [f.id, f.cardId, f.name, f.chargeDate, f.requirement, f.status, f.note]));
   (data.transactions || []).forEach(t => run(
-    `INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate,limitAmount,instId,instPeriod) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate,limitAmount,instId,instPeriod,availableDelta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [t.id, t.cardId, t.date, t.time, t.createdAt, Number(t.amount || 0), t.note, t.type, t.type === 'repayment' ? null : Number(t.feeRate != null ? t.feeRate : DEFAULT_FEE_RATE),
-     t.limitAmount != null ? Number(t.limitAmount) : null, t.instId != null ? Number(t.instId) : null, t.instPeriod != null ? Number(t.instPeriod) : null]));
+     t.limitAmount != null ? Number(t.limitAmount) : null, t.instId != null ? Number(t.instId) : null, t.instPeriod != null ? Number(t.instPeriod) : null, t.availableDelta != null ? Number(t.availableDelta) : null]));
   (data.installments || []).forEach(n => run(
     `INSERT INTO installments(id,cardId,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note,feeMode,monthRate) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [n.id, n.cardId, n.name, Number(n.principal || 0), Number(n.periods || 1), Number(n.postedBase || 0),
@@ -174,7 +186,8 @@ function seedFrom(data) {
   (data.plates || []).forEach(p => run(
     `INSERT INTO plates(id,name,owner,lastWay,lastUsedAt) VALUES(?,?,?,?,?)`,
     [p.id, p.name || '', p.owner || '', p.lastWay || '', p.lastUsedAt || '']));
-  db.exec('COMMIT');
+  target.exec('COMMIT');
+  } catch (e) { target.exec('ROLLBACK'); throw e; }
 }
 
 /* modify by huangle 日期:2026-08-25 sql.js 加载失败重试一次
@@ -209,9 +222,10 @@ function setDirty(value) {
   updateSyncLabel();
 }
 async function persist() {
-  await persistNow();
   changeVersion += 1;
   setDirty(true);
+  pendingPersistence += 1;
+  try { await persistNow(); } finally { pendingPersistence -= 1; }
   scheduleAutoSync();
 }
 /* ---------- 业务逻辑(忠实移植 xyk) ---------- */
@@ -255,7 +269,7 @@ function isBillOn(c, dateStr) { const bd = parseBillDay(c.billDay); if (!bd) ret
 /* ---------- 逾期还款判定 ----------
    cards 表没有「本期应还」字段,按用户拍板的口径:用记录的流水周期现算。
    本期 = (上一个账单日, 最近一个账单日],本期应还 = 该窗口内的消费合计;
-   已还 = 上一个还款日之后记录的还款合计(上个还款日当天那笔是还上一期的,不算进来;「还款差额」也不算,见 cycleDue)。
+   已还 = 按日期分配到该账单的真实还款(旧账优先,不重复抵扣;「还款差额」不算)。
    所有周期日期都从原点用 addMonthsClamped 现算,绝不做「未来日期回退一月」——
    31 号的卡被夹到 2-28 再回退会永久漂成 1-28,和 instPeriodDate 是同一个坑。 */
 function lastBillDate(c, ref) {
@@ -274,29 +288,56 @@ function repayDateForBill(c, billDate) {
   while (addMonthsClamped(o, k - 1) > billDate && g++ < 600) k -= 1;
   return addMonthsClamped(o, k);
 }
-/* 算一个账单周期。日期都是 YYYY-MM-DD,可以直接字符串比较。
-   应还取账单窗口内的消费,已还取上一还款日之后、截至 ref 的真实还款;
-   逾期后补记的还款也计入,「还款差额」只留档、不算已还。
-   modify by huangle 日期:2026-10-15 还差统一按本期应还减本期已还。
-   不能再用全库消费减全库还款压低本期还差:旧消费可能未录入,但旧还款已有记录,
-   会把上一还款日用于结清上一期的钱再次抵扣本期,出现「已还 0,还差却变少」。
-   不从历史净额推断提前还款;limitAmount=0 的「额度已手改」真实还款仍照常计入。 */
-function cycleDue(c, billDate, ref) {
+function billCycle(c, billDate) {
   const bd = parseBillDay(c.billDay);
   const prevBill = dateWithDay(billDate.getFullYear(), billDate.getMonth() - 1, bd);
-  const a = fmtDate(prevBill), b = fmtDate(billDate);
-  const pr = fmtDate(repayDateForBill(c, prevBill));
-  let due = 0, paid = 0;
-  getTx(c.id).forEach(t => {
-    const d = String(t.date || ''); if (!d) return;
-    const v = Number(t.amount || 0);
-    if (t.type === 'repayment') {
-      if (String(t.note || '') !== '还款差额' && d > pr && d <= ref) paid += v;
-    } else if (d > a && d <= b) due += v;
+  return { bill: fmtDate(billDate), prevBill: fmtDate(prevBill),
+    prevRepay: fmtDate(repayDateForBill(c, prevBill)), repay: fmtDate(repayDateForBill(c, billDate)),
+    due: 0, paid: 0, remain: 0, need: 0 };
+}
+/* 按日期把真实还款分配给旧账，再分配给当时已进入还款窗口的后续账单。
+   一笔钱只使用一次。上一还款日当天仍属于上一期；无对应旧消费的余额只留在
+   当时那一期，不能因为历史消费缺失就推定成下一期的提前还款。差额笔不参与。
+   桶由已记录流水建立，不限制只看最近三个月，因此长期欠款也不会自动消失。 */
+function repaymentLedger(c, ref = todayStr()) {
+  if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return [];
+  const bd = parseBillDay(c.billDay), buckets = new Map();
+  const get = date => {
+    const key = fmtDate(date);
+    if (!buckets.has(key)) buckets.set(key, billCycle(c, date));
+    return buckets.get(key);
+  };
+  const payments = [];
+  const rows = getTx(c.id).filter(t => /^\d{4}-\d{2}-\d{2}$/.test(String(t.date || '')) && t.date <= ref);
+  rows.forEach(t => {
+    const date = parseDate(t.date), amount = money2(t.amount);
+    if (!Number.isFinite(amount) || amount <= 0 || isNaN(date.getTime())) return;
+    if (t.type !== 'repayment') {
+      let bill = dateWithDay(date.getFullYear(), date.getMonth(), bd);
+      if (bill < date) bill = dateWithDay(date.getFullYear(), date.getMonth() + 1, bd);
+      const bucket = get(bill); bucket.due = money2(bucket.due + amount);
+    } else if (String(t.note || '') !== '还款差额') {
+      let bill = lastBillDate(c, t.date);
+      if (repayDateForBill(c, bill) < date) bill = dateWithDay(bill.getFullYear(), bill.getMonth() + 1, bd);
+      payments.push({ date: t.date, id: Number(t.id || 0), amount, nominal: get(bill) });
+    }
   });
-  due = money2(due); paid = money2(paid);
-  const remain = Math.max(0, money2(due - paid));
-  return { bill: b, prevBill: a, repay: fmtDate(repayDateForBill(c, billDate)), due, paid, remain, need: remain };
+  const cycles = [...buckets.values()].sort((a, b) => a.bill.localeCompare(b.bill));
+  payments.sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id).forEach(p => {
+    let left = p.amount;
+    for (const b of cycles) {
+      if (b.prevRepay >= p.date) break;
+      const applied = Math.min(left, Math.max(0, money2(b.due - b.paid)));
+      b.paid = money2(b.paid + applied); left = money2(left - applied);
+      if (left <= 0) break;
+    }
+    if (left > 0) p.nominal.paid = money2(p.nominal.paid + left);
+  });
+  cycles.forEach(b => { b.remain = b.need = Math.max(0, money2(b.due - b.paid)); });
+  return cycles;
+}
+function cycleDue(c, billDate, ref) {
+  return repaymentLedger(c, ref).find(b => b.bill === fmtDate(billDate)) || billCycle(c, billDate);
 }
 /* 已经过了还款日、还没记到够数还款的卡。判据按用户要求放宽,宁可不报也不误报:
    缺账单日/还款日不判、额度已回满算已还清、本期没消费不判、算出来不差钱不判。
@@ -304,15 +345,11 @@ function cycleDue(c, billDate, ref) {
 function overdueInfo(c, ref = todayStr()) {
   if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
   if (Number(c.available) >= Number(c.total) - 0.01) return null;
-  const r = parseDate(ref);
-  let bill = lastBillDate(c, ref), info = null, g = 0;
-  while (bill && g++ < 3) {                                  // 最近一个「还款日已过」的周期
-    const cyc = cycleDue(c, bill, ref);
-    if (parseDate(cyc.repay) < r) { info = cyc; break; }
-    bill = dateWithDay(bill.getFullYear(), bill.getMonth() - 1, parseBillDay(c.billDay));
-  }
-  if (!info || info.due <= 0.01 || info.need <= 0.01) return null;
-  return { repay: info.repay, days: Math.max(1, Math.round((r - parseDate(info.repay)) / 86400000)), due: info.due, paid: info.paid, remain: info.need };
+  const cycles = repaymentLedger(c, ref).filter(b => b.repay < ref && b.need > 0.01);
+  if (!cycles.length) return null;
+  const sum = key => money2(cycles.reduce((n, b) => n + b[key], 0));
+  return { repay: cycles[0].repay, days: Math.max(1, Math.round((parseDate(ref) - parseDate(cycles[0].repay)) / 86400000)),
+    due: sum('due'), paid: sum('paid'), remain: sum('need'), cycles };
 }
 /* 这次还款该冲抵多少:优先用逾期那期的「还差」,没逾期就用当期账单的「还差」(Task C 拿它算差额) */
 function dueToRepay(c, ref = todayStr()) {
@@ -321,6 +358,11 @@ function dueToRepay(c, ref = todayStr()) {
   const bill = lastBillDate(c, ref); if (!bill) return null;
   const cyc = cycleDue(c, bill, ref);
   return { repay: cyc.repay, days: 0, due: cyc.due, paid: cyc.paid, remain: cyc.need };
+}
+/* 拆分时覆盖所有已经进入还款窗口的已记消费，避免把偿还另一张账单的钱误标为差额。 */
+function repaymentCapacity(c, ref = todayStr()) {
+  if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
+  return { remain: money2(repaymentLedger(c, ref).filter(b => b.prevRepay < ref).reduce((n, b) => n + b.need, 0)) };
 }
 
 /* ---------- 数据读取 ---------- */
@@ -423,13 +465,18 @@ function applyToAvailable(available, total, tx) {
   return money2(Math.max(0, available - amt));
 }
 function reverseFromAvailable(available, total, tx) {
-  const amt = txLimitAmount(tx);
-  if (tx.type === 'repayment') return money2(Math.max(0, available - amt));
-  return money2(Math.min(total, available + amt));
+  // 新流水按实际变动撤销；旧流水缺少此信息，保持银行余额并提示人工核对。
+  if (tx.availableDelta != null && Number.isFinite(Number(tx.availableDelta))) {
+    return money2(Math.max(0, Math.min(total, available - Number(tx.availableDelta))));
+  }
+  return available;
 }
+function needsBalanceCheck(tx) { return tx.availableDelta == null && txLimitAmount(tx) !== 0; }
 /* ---------- 数据写入 ---------- */
-async function addTransaction(cardId, input) {
-  const card = getCard(cardId); if (!card) return;
+function insertTransaction(cardId, input) {
+  const card = getCard(cardId); if (!card) throw new Error('卡片不存在');
+  if (!Number.isFinite(Number(input.amount)) || Number(input.amount) < 0) throw new Error('流水金额不能为负数或无效数值');
+  if (input.limitAmount != null && (!Number.isFinite(Number(input.limitAmount)) || Number(input.limitAmount) < 0)) throw new Error('影响额度金额无效');
   const type = input.type === 'repayment' ? 'repayment' : 'spend';
   const feeRate = type === 'repayment' ? null : (Number.isFinite(Number(input.feeRate)) && Number(input.feeRate) >= 0 ? Number(input.feeRate) : DEFAULT_FEE_RATE);
   const tx = { cardId, date: input.date, time: input.time || nowTime(), createdAt: nowStamp(), amount: Number(input.amount || 0), note: input.note || (type === 'repayment' ? '还款' : '消费'), type, feeRate,
@@ -437,13 +484,22 @@ async function addTransaction(cardId, input) {
     instId: input.instId != null ? Number(input.instId) : null,
     instPeriod: input.instPeriod != null ? Number(input.instPeriod) : null };
   const id = nextId('transactions');
-  run(`INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate,limitAmount,instId,instPeriod) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, tx.cardId, tx.date, tx.time, tx.createdAt, tx.amount, tx.note, tx.type, tx.feeRate, tx.limitAmount, tx.instId, tx.instPeriod]);
   const avail = applyToAvailable(Number(card.available), Number(card.total), tx);
+  const delta = money2(avail - Number(card.available));
+  run(`INSERT INTO transactions(id,cardId,date,time,createdAt,amount,note,type,feeRate,limitAmount,instId,instPeriod,availableDelta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, tx.cardId, tx.date, tx.time, tx.createdAt, tx.amount, tx.note, tx.type, tx.feeRate, tx.limitAmount, tx.instId, tx.instPeriod, delta]);
   run('UPDATE cards SET available=? WHERE id=?', [avail, cardId]);
-  await persist();
+  return id;
 }
+async function addTransactions(cardId, inputs) {
+  ensureWritable();
+  const ids = atomicDb(() => inputs.map(input => insertTransaction(cardId, input)));
+  await persist();
+  return ids;
+}
+async function addTransaction(cardId, input) { return (await addTransactions(cardId, [input]))[0]; }
 async function deleteTransaction(id) {
+  ensureWritable();
   const r = all('SELECT * FROM transactions WHERE id=?', [id]); if (!r.length) return;
   const tx = r[0]; const card = getCard(tx.cardId);
   if (card) run('UPDATE cards SET available=? WHERE id=?', [reverseFromAvailable(Number(card.available), Number(card.total), tx), card.id]);
@@ -451,6 +507,7 @@ async function deleteTransaction(id) {
   await persist();
 }
 async function addCard(input) {
+  ensureWritable();
   const fixed = Number(input.fixed || 0), temporary = Number(input.temporary || 0);
   const id = nextId('cards');
   run(`INSERT INTO cards(id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
@@ -458,12 +515,14 @@ async function addCard(input) {
   await persist(); return id;
 }
 async function updateCard(id, input) {
+  ensureWritable();
   const fixed = Number(input.fixed || 0), temporary = Number(input.temporary || 0);
   run(`UPDATE cards SET user=?,bank=?,name=?,tail=?,total=?,fixed=?,temporary=?,available=?,billDay=?,repayDay=? WHERE id=?`,
     [input.user || '', input.bank || '', input.name || '', input.tail || '', fixed + temporary, fixed, temporary, Number(input.available || 0), input.billDay || '', input.repayDay || '', id]);
   await persist();
 }
 async function deleteCard(id) {
+  ensureWritable();
   run('DELETE FROM transactions WHERE cardId=?', [id]);
   run('DELETE FROM annual_fees WHERE cardId=?', [id]);
   run('DELETE FROM installments WHERE cardId=?', [id]);
@@ -471,6 +530,7 @@ async function deleteCard(id) {
   await persist();
 }
 async function saveFee(cardId, feeId, input) {
+  ensureWritable();
   if (feeId == null) {
     const id = (Number(scalar('SELECT MAX(id) FROM annual_fees WHERE cardId=?', [cardId])) || 0) + 1;
     run(`INSERT INTO annual_fees(id,cardId,name,chargeDate,requirement,status,note) VALUES(?,?,?,?,?,?,?)`,
@@ -481,7 +541,7 @@ async function saveFee(cardId, feeId, input) {
   }
   await persist();
 }
-async function deleteFee(cardId, feeId) { run('DELETE FROM annual_fees WHERE cardId=? AND id=?', [cardId, feeId]); await persist(); }
+async function deleteFee(cardId, feeId) { ensureWritable(); run('DELETE FROM annual_fees WHERE cardId=? AND id=?', [cardId, feeId]); await persist(); }
 
 /* ---------- 分期 ---------- */
 /* 口径:可用额度永远等于银行 APP 显示的数,分期剩余本金不参与任何加减,只做拆解展示。
@@ -532,7 +592,24 @@ function instPeriodDate(n, k) {
   if (isNaN(d.getTime())) return null;
   return fmtDate(addMonthsClamped(d, k - anchor));
 }
+function installmentError(n) {
+  const p = Number(n.principal), count = Number(n.periods);
+  if (!Number.isFinite(p) || p <= 0) return '总本金必须大于 0';
+  if (!Number.isInteger(count) || count < 1 || count > 1200) return '总期数须为 1 到 1200 的整数';
+  const entered = Number(n.perPrincipal || 0);
+  const per = entered > 0 ? money2(entered) : money2(p / count);
+  if (!Number.isFinite(entered) || entered < 0 || money2(p - per * (count - 1)) < 0) return '每期本金与总本金、期数不一致，会产生负数末期本金';
+  if (!Number.isFinite(Number(n.perFee || 0)) || Number(n.perFee || 0) < 0 || !Number.isFinite(Number(n.monthRate || 0)) || Number(n.monthRate || 0) < 0) return '利息和利率不能为负数或无效数值';
+  return '';
+}
 function instInfo(n) {
+  const error = installmentError(n);
+  if (error) {
+    const periods = Number.isInteger(Number(n.periods)) && Number(n.periods) > 0 ? Number(n.periods) : 1;
+    const posted = instPosted({ ...n, periods });
+    return { error, periods, principal: Number(n.principal) || 0, posted, remain: Math.max(0, periods - posted),
+      closed: n.status === 'closed', plan: [], nextDate: null, nextK: posted + 1, perPay: 0, rate: null, leftP: 0, pendingFee: 0, pct: 0 };
+  }
   const periods = Math.max(1, Number(n.periods || 1));
   const principal = Number(n.principal || 0);
   const declining = n.feeMode === 'declining';
@@ -587,7 +664,7 @@ function cardInstSummary(cardId) {
   rows.forEach(n => {
     const i = instInfo(n);
     out.count += 1;
-    if (i.closed) return;
+    if (i.closed || i.error) return;
     out.active += 1;
     out.pendingP = money2(out.pendingP + i.leftP);
     /* 剩余利息由 instInfo 逐期求和给出(等额本金每期都不一样),和剩余本金分开显示 */
@@ -602,6 +679,9 @@ function cardInstSummary(cardId) {
 }
 
 async function saveInst(cardId, instId, input) {
+  ensureWritable();
+  const error = installmentError(input);
+  if (error) throw new Error(error);
   const periods = Math.max(1, Math.round(Number(input.periods || 1)));
   const remaining = Math.min(periods, Math.max(0, Math.round(Number(input.remaining != null ? input.remaining : periods))));
   const principal = Number(input.principal || 0);
@@ -622,6 +702,7 @@ async function saveInst(cardId, instId, input) {
 }
 /* 删分期:入账过的流水一并撤掉,额度回滚,避免留下对不上的孤儿流水 */
 async function deleteInst(cardId, instId) {
+  ensureWritable();
   const txs = all('SELECT * FROM transactions WHERE cardId=? AND instId=?', [cardId, instId]);
   const card = getCard(cardId);
   if (card) {
@@ -634,35 +715,41 @@ async function deleteInst(cardId, instId) {
   await persist();
 }
 async function closeInst(cardId, instId) {
+  ensureWritable();
   run(`UPDATE installments SET status='closed' WHERE cardId=? AND id=?`, [cardId, instId]);
   await persist();
 }
 async function reopenInst(cardId, instId) {
+  ensureWritable();
   run(`UPDATE installments SET status='active' WHERE cardId=? AND id=?`, [cardId, instId]);
   await persist();
 }
 
 /* 打开页面时补记:网页没有后台进程,只能在打开时把所有已过入账日的期数一次补齐。
    按 (cardId, instId, instPeriod) 幂等,重复打开不会重复入账。 */
-async function catchUpInstallments() {
+async function catchUpInstallments(options = {}) {
+  if (options.persist !== false) ensureWritable();
   const rows = allInsts();
   if (!rows.length) return 0;
   const today = todayStr();
-  let done = 0;
+  let done = 0, invalid = 0;
+  atomicDb(() => {
   for (const n of rows) {
     if (n.status === 'closed') continue;
     if (!getCard(n.cardId)) continue;
-    for (let guard = 0; guard < 240; guard++) {
-      const i = instInfo(n);
-      if (i.closed || !i.nextDate || i.nextDate > today) break;
-      const k = i.nextK;
+    const i = instInfo(n);
+    if (i.error) { invalid += 1; continue; }
+    if (i.closed) continue;
+    for (const period of i.plan) {
+      if (period.k <= i.posted || !period.date || period.date > today) continue;
+      const k = period.k;
       const dup = Number(scalar('SELECT COUNT(*) FROM transactions WHERE cardId=? AND instId=? AND instPeriod=?', [n.cardId, n.id, k])) || 0;
-      if (dup) break;
+      if (dup) continue;
       /* 本期金额按期号现算:等额本金每期利息不同,不能拿一个定额一路记下去 */
       const pp = i.periodPrincipal(k);
       const pf = i.periodFee(k);
-      await addTransaction(n.cardId, {
-        type: 'spend', date: i.nextDate, time: '00:00', amount: money2(pp + pf),
+      insertTransaction(n.cardId, {
+        type: 'spend', date: period.date, time: '00:00', amount: money2(pp + pf),
         note: `${n.name || '分期'} 第 ${k}/${i.periods} 期`, feeRate: 0,
         limitAmount: n.occupyLimit ? pf : null,
         instId: n.id, instPeriod: k
@@ -670,6 +757,9 @@ async function catchUpInstallments() {
       done += 1;
     }
   }
+  });
+  if (done && options.persist !== false) await persist();
+  if (invalid) toast(`${invalid} 条分期参数异常，已暂停自动入账，请在分期中修正`);
   return done;
 }
 /* ---------- 渲染 ---------- */
@@ -787,16 +877,18 @@ function wayClass(w) { return w === 'ali' ? 'ali' : w === 'wx' ? 'wx' : 'none'; 
 function getPlates() { return all('SELECT * FROM plates ORDER BY id'); }
 function getPlate(id) { const r = all('SELECT * FROM plates WHERE id=?', [id]); return r[0] || null; }
 async function addPlate(input) {
+  ensureWritable();
   const id = nextId('plates');
   run('INSERT INTO plates(id,name,owner,lastWay,lastUsedAt) VALUES(?,?,?,?,?)',
     [id, input.name || '', input.owner || '', input.lastWay || '', input.lastUsedAt || '']);
   await persist(); return id;
 }
 async function updatePlateUse(id, way, usedAt) {
+  ensureWritable();
   run('UPDATE plates SET lastWay=?,lastUsedAt=? WHERE id=?', [way || '', usedAt || '', id]);
   await persist();
 }
-async function deletePlate(id) { run('DELETE FROM plates WHERE id=?', [id]); await persist(); }
+async function deletePlate(id) { ensureWritable(); run('DELETE FROM plates WHERE id=?', [id]); await persist(); }
 
 /* 只按上次使用时间排序:desc=最近在前, asc=最早在前;未使用(空时间)永远沉底 */
 function sortedPlates() {
@@ -1058,7 +1150,7 @@ function maybeShowOverdueAlert() {
 /* modify by huangle 日期:2026-09-01
    卡片详情里的「本期」四行。金额和周期全部出自 cycleDue():
      本期应还 = 本期账单窗口内的消费合计(账单原额,不减已还);
-     本期已还 = 上一个还款日之后记的还款合计(「还款差额」不计入,见 cycleDue);
+     本期已还 = 分配到该期的真实还款(「还款差额」不计入,见 cycleDue);
      本期还差 = max(0, 本期应还 - 本期已还),与卡片列表上那个数同源同门;
      账单周期 = (上一账单日, 最近账单日]。
    ★ 写出账单周期是这四行里最要紧的一条:「我 8 月记的消费为什么不算 8 月这期」看一眼就自解了。
@@ -1076,7 +1168,7 @@ function cardCycleRowsHTML(c) {
      判据是两期的还款日不同 —— 相同就说明 overdueInfo 找到的正是当期,那是同一笔钱,不能说「另有」。
      额度回满时 overdueOf 必然为 null(同一道门),所以这两句由头不会同时出现。 */
   const lt = overdueOf(c);
-  const otherLate = !full && lt && lt.repay !== cyc.repay ? lt.remain : 0;
+  const otherLate = !full && lt ? money2(lt.cycles.filter(b => b.bill !== cyc.bill).reduce((n, b) => n + b.need, 0)) : 0;
   const from = fmtDate(new Date(parseDate(cyc.prevBill).getTime() + 86400000));
   return `<div class="detail-row"><span>本期应还</span><strong>${yuan(cyc.due)}</strong></div>` +
     `<div class="detail-row"><span>本期已还</span><strong>${yuan(cyc.paid)}</strong></div>` +
@@ -1127,7 +1219,7 @@ function updateDiff() {
   const seg = document.querySelector('.type-seg button.on');
   const type = seg ? seg.dataset.t : 'spend';
   const amount = parseFloat(val('recAmt')) || 0;
-  const d = (type === 'repayment' && recCard) ? dueToRepay(recCard, val('recDate') || todayStr()) : null;
+  const d = (type === 'repayment' && recCard) ? repaymentCapacity(recCard, val('recDate') || todayStr()) : null;
   const remain = d ? d.remain : 0, extra = money2(amount - remain);
   const save = document.getElementById('recSave');
   if (!d || remain <= 0.005 || extra <= 0.005) {
@@ -1159,6 +1251,11 @@ function openRecord(id) {
   updateSettle();
 }
 async function saveRecord(id) {
+  if (recordSaving) return;
+  recordSaving = true;
+  const save = document.getElementById('recSave');
+  if (save) save.disabled = true;
+  try {
   const type = document.querySelector('.type-seg button.on').dataset.t;
   const amount = parseFloat(val('recAmt')) || 0;
   if (amount <= 0) { toast('请输入金额'); return; }
@@ -1169,22 +1266,28 @@ async function saveRecord(id) {
      入额度只会把 available 顶高、算已还只会把后面的「还差」压成 0(cycleDue 按备注把它排除)。
      它只留档对账:流水里带「差额 · 不动额度」小标;删除走 reverseFromAvailable 同样按 0 反算,一来一回一致。 */
   const c = getCard(id);
-  const d = (type === 'repayment' && diffSplitOn() && c) ? dueToRepay(c, date) : null;
+  const d = (type === 'repayment' && diffSplitOn() && c) ? repaymentCapacity(c, date) : null;
   const remain = d ? d.remain : 0, extra = money2(amount - remain);
   if (d && remain > 0.005 && extra > 0.005) {
-    await addTransaction(id, { type, amount: remain, date, note });
-    await addTransaction(id, { type, amount: extra, date, note: '还款差额', limitAmount: 0 });
+    await addTransactions(id, [{ type, amount: remain, date, note },
+      { type, amount: extra, date, note: '还款差额', limitAmount: 0 }]);
     renderAll(); openCard(id); toast('已记 2 笔 · 差额 ' + yuan(extra));
     return;
   }
   await addTransaction(id, { type, amount, date, note });
   renderAll(); openCard(id); toast('已记录');
+  } catch (e) { toast('保存失败:' + e.message); }
+  finally { recordSaving = false; if (save) save.disabled = false; }
 }
 function confirmDelTx(id) {
-  if (window.confirm('删除这笔流水?额度会自动反算恢复。')) {
+  const record = all('SELECT * FROM transactions WHERE id=?', [id])[0];
+  if (!record) return;
+  const legacy = needsBalanceCheck(record);
+  const message = legacy ? '删除这笔旧版流水？当时实际额度变动未记录，将保持当前可用额度；删除后请按银行余额核对并修改额度。' : '删除这笔流水?额度会按实际变动反算恢复。';
+  if (window.confirm(message)) {
     const tx = all('SELECT cardId FROM transactions WHERE id=?', [id]);
     const cardId = tx.length ? tx[0].cardId : null;
-    deleteTransaction(id).then(() => { renderAll(); if (cardId && document.getElementById('mb').classList.contains('show')) openCard(cardId); else closeM(); toast('已删除'); });
+    deleteTransaction(id).then(() => { renderAll(); if (cardId && document.getElementById('mb').classList.contains('show')) openCard(cardId); else closeM(); toast(legacy ? '已删除，请按银行余额核对可用额度' : '已删除'); });
   }
 }
 /* ---------- 年费规则 ---------- */
@@ -1243,6 +1346,7 @@ function plainNum2(v) { return Number(v || 0).toLocaleString('zh-CN', { minimumF
 
 function instRowHTML(cardId, n) {
   const i = instInfo(n);
+  if (i.error) return `<div class="inst-row" onclick="openEditInst(${cardId},${n.id})"><strong>${esc(n.name || '分期')} · 参数异常</strong><p class="muted">${esc(i.error)}，点击修改。已暂停自动入账。</p></div>`;
   const tag = i.closed ? '<span class="inst-tag done">已结清</span>'
     : (n.occupyLimit ? '<span class="inst-tag occupy">占用额度</span>' : '<span class="inst-tag">不占额度</span>');
   /* 计息方式标签和占额度标签并列:两种混在一张卡上时一眼能分开 */
@@ -1278,6 +1382,7 @@ function openInstPlan(cardId, instId, all) {
   const c = getCard(cardId), n = getInst(cardId, instId);
   if (!c || !n) return;
   const i = instInfo(n);
+  if (i.error) { toast(i.error + '，请先修改分期'); return; }
   const show = all ? i.periods : Math.min(i.periods, 6);
   let rows = '';
   for (let k = 1; k <= show; k++) {
@@ -1316,13 +1421,14 @@ function previewInstInfo() {
     periods: Math.max(1, Math.round(parseFloat(val('iPeriods')) || 0) || 1), postedBase: 0,
     perPrincipal: parseFloat(val('iPerP')) || 0, perFee: mode === 'declining' ? 0 : (parseFloat(val('iFee')) || 0),
     startDate: val('iStart'), occupyLimit: 0, status: 'active',
-    feeMode: mode, monthRate: mode === 'declining' && rate > 0 ? rate / 1200 : 0
+    feeMode: mode, monthRate: mode === 'declining' ? rate / 1200 : 0
   });
 }
 function updateInstPreview() {
   const box = document.getElementById('instPrev'); if (!box) return;
   const i = previewInstInfo();
   const hint = document.getElementById('iPerHint');
+  if (i.error) { box.textContent = i.error; if (hint) hint.textContent = '请修正参数后再保存'; return; }
   if (i.declining) {
     if (hint) hint.textContent = i.perP
       ? `每期本金 ${yuan(i.perP)}，首期共还 ${yuan(i.firstPay)}，末期共还 ${yuan(i.lastPay)}，利息合计 ${yuan(i.feeTotal)}，总还 ${yuan(i.payTotal)}`
@@ -1391,7 +1497,7 @@ function readInstForm() {
     name: val('iName') || '分期', principal: parseFloat(val('iPrincipal')) || 0,
     periods: parseFloat(val('iPeriods')) || 0, remaining: val('iRemain') === '' ? null : parseFloat(val('iRemain')),
     perPrincipal: parseFloat(val('iPerP')) || 0, perFee: mode === 'declining' ? 0 : (parseFloat(val('iFee')) || 0),
-    feeMode: mode, monthRate: mode === 'declining' && rate > 0 ? rate / 1200 : 0, rateRaw,
+    feeMode: mode, monthRate: mode === 'declining' ? rate / 1200 : 0, rateRaw,
     startDate: val('iStart'), occupyLimit: seg ? seg.dataset.o === '1' : false, note: val('iNote')
   };
 }
@@ -1414,6 +1520,8 @@ function openEditInst(id, instId) {
 }
 async function saveInstForm(id, instId) {
   const input = readInstForm();
+  const planError = installmentError(input);
+  if (planError) { toast(planError); return; }
   if (!(input.principal > 0)) { toast('请输入总本金'); return; }
   if (!(input.periods >= 1)) { toast('请输入总期数'); return; }
   /* 等额本金必须有年化利率才能逐期算利息;填 0 是允许的(等于免息分期),只拦空着不填 */
@@ -1427,8 +1535,10 @@ async function saveInstForm(id, instId) {
   renderAll(); openInsts(id); toast(n ? `已保存,自动入账 ${n} 期` : '已保存');
 }
 async function removeInst(id, instId) {
-  if (!window.confirm('删除该分期?已自动生成的入账流水会一并撤销,额度自动恢复。')) return;
-  await deleteInst(id, instId); renderAll(); openInsts(id); toast('已删除');
+  const legacy = all('SELECT * FROM transactions WHERE cardId=? AND instId=?', [id, instId]).some(needsBalanceCheck);
+  const message = '删除该分期?已自动生成的入账流水会一并撤销。' + (legacy ? '其中旧版流水缺少实际额度变动，将保留其额度影响；删除后请按银行余额核对并修改额度。' : '额度按实际变动恢复。');
+  if (!window.confirm(message)) return;
+  await deleteInst(id, instId); renderAll(); openInsts(id); toast(legacy ? '已删除，请核对可用额度' : '已删除');
 }
 async function closeInstUI(id, instId) { await closeInst(id, instId); renderAll(); openInsts(id); toast('已标记结清'); }
 async function reopenInstUI(id, instId) { await reopenInst(id, instId); renderAll(); openInsts(id); toast('已恢复'); }
@@ -1618,7 +1728,7 @@ function openSync() {
     `<p class="muted" style="margin:-6px 0 12px">已启用自动同步：输入密码进入后自动拉取云端数据并与本机对比，若有差异会让你选择用本机还是云端；新增、修改或删除后自动备份到 GitHub 私有仓库。</p>` +
     `<div class="af-rule"><span class="af-r-ic" style="background:var(--green-soft);color:var(--green)">☁</span><span class="af-r-body"><span class="af-r-title">${info}</span><span class="af-r-sub" id="syncState">${connected ? '已连接 · 数据库 ' + dbSizeText() : '请先在「备份设置」填写仓库和令牌'}</span></span><span class="af-r-state">${connected ? '私有' : '未配置'}</span></div>` +
     (connected ? `<button class="primary-action" onclick="doSync()">立即备份并同步</button><button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doPull()">从云端恢复</button>` : `<button class="primary-action" onclick="openBackupCfg()">去配置备份</button>`) +
-    `<p class="auth-note" style="color:var(--muted);margin-top:16px">自动同步只在网页打开且联网时运行。连续修改会合并后同步；多台设备同时编辑时，以最后一次成功同步为准。令牌只保存在本机。</p>`);
+    `<p class="auth-note" style="color:var(--muted);margin-top:16px">自动同步只在网页打开且联网时运行。连续修改会合并后同步；发现本机与云端冲突时暂停上传，选择以哪份为准后再继续。令牌只保存在本机。</p>`);
 }
 async function ghRequest(cfg, method, extra, accept) {
   const url = `https://api.github.com/repos/${cfg.user}/${cfg.repo}/contents/ledger.db`;
@@ -1656,13 +1766,30 @@ async function ghFetchDbBytes(cfg) {
   throw new Error('取回的不是数据库文件(' + raw.length + ' 字节)');
 }
 function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
-  if (!dirty || !ghReady()) return;
   clearTimeout(autoSyncTimer);
+  if (!dirty || !ghReady() || !unlocked || syncRunning || pendingCloudBytes || databaseReplacing || pendingPersistence || !syncVerified || verifiedBackup !== backupIdentity()) return;
   autoSyncTimer = setTimeout(() => doSync({ automatic: true }), delay);
+}
+function backupIdentity(cfg = ghCfg()) { return cfg.user + '/' + cfg.repo; }
+function rememberRemote(sha, cfg) { remoteSha = sha; verifiedBackup = backupIdentity(cfg); syncVerified = true; }
+async function remoteHead(cfg) {
+  const head = await ghRequest(cfg, 'GET', null, 'application/vnd.github.object+json');
+  if (head.status === 404) return null;
+  if (!head.ok) throw new Error('HTTP ' + head.status);
+  const j = await head.json();
+  if (!j.sha) throw new Error('云端未返回文件版本，已停止同步');
+  return j.sha;
+}
+async function cloudSnapshot(cfg) {
+  const sha = await remoteHead(cfg);
+  if (sha === null) return { status: 404, sha: null };
+  const got = await ghFetchDbBytes(cfg);
+  if (got.status !== 200 || await remoteHead(cfg) !== sha) throw new Error('读取期间云端已变化，请重新同步');
+  return { status: 200, sha, bytes: got.bytes };
 }
 async function doSync(options = {}) {
   const automatic = Boolean(options.automatic);
-  if (!ghReady()) return false;
+  if (!ghReady() || !unlocked || databaseReplacing || pendingPersistence) return false;
   /* modify by huangle 日期:2026-08-25 库没打开就不备份
      下面 isDbEmpty() 要查库,db 为 null 会直接抛;更要紧的是这时候本机看着就是空的,
      万一走到上传分支等于拿空库覆盖云端。宁可这次不备份。 */
@@ -1673,24 +1800,37 @@ async function doSync(options = {}) {
     setDirty(false);
     return false;
   }
-  if (syncRunning) { syncAgain = true; return false; }
+  if (syncRunning) return false;
+  const resolving = options.resolveConflict && pendingCloudBytes;
+  if (pendingCloudBytes && !resolving) { if (!automatic) toast('请先解决本机与云端的数据冲突'); return false; }
+  if (!resolving && (!syncVerified || verifiedBackup !== backupIdentity())) {
+    await syncOnOpen();
+    if (!syncVerified || pendingCloudBytes || verifiedBackup !== backupIdentity()) return false;
+  }
+  if (syncRunning) return false;
   syncRunning = true;
-  const syncingVersion = changeVersion;
+  clearTimeout(autoSyncTimer);
+  let recheck = false, retry = false;
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '同步中…';
   try {
-    let sha;
-    /* 只要 sha,用 object 媒体类型:它对超过 1MB 的文件也照常返回 sha(只是 content 为空),
-       比默认 JSON 稳。拿不到 sha 会导致 PUT 被 GitHub 拒(缺 sha),备份就断了。 */
-    const head = await ghRequest(cfg, 'GET', null, 'application/vnd.github.object+json');
-    if (head.ok) { const j = await head.json(); sha = j.sha; }
+    const sha = await remoteHead(cfg);
+    const expected = resolving ? pendingCloudSha : remoteSha;
+    if (sha !== expected) { syncVerified = false; recheck = true; return false; }
+    if (!unlocked || backupIdentity() !== backupIdentity(cfg) || databaseReplacing || pendingPersistence) return false;
+    const syncingVersion = changeVersion;
     const body = { message: '备份账务数据 ' + nowStamp(), content: bytesToB64(db.export()) };
     if (sha) body.sha = sha;
     const r = await ghRequest(cfg, 'PUT', body);
+    if (r.status === 409 || r.status === 422) { syncVerified = false; recheck = true; return false; }
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    const result = await r.json();
+    if (!result.content || !result.content.sha) { syncVerified = false; throw new Error('备份已发送，需重新核对云端版本'); }
+    rememberRemote(result.content.sha, cfg);
+    pendingCloudBytes = null; pendingCloudSha = null;
     const t = nowStamp(); localStorage.setItem(SYNC_TIME_KEY, t);
     if (changeVersion === syncingVersion) setDirty(false);
-    else { setDirty(true); syncAgain = true; }
+    else { setDirty(true); retry = true; }
     if (st) st.textContent = '已同步 ✓ · ' + t + ' · ' + dbSizeText();
     if (!automatic) toast('已备份到 GitHub');
     return true;
@@ -1700,32 +1840,29 @@ async function doSync(options = {}) {
     return false;
   } finally {
     syncRunning = false;
-    if (syncAgain) { syncAgain = false; scheduleAutoSync(500); }
+    if (recheck) await syncOnOpen();
+    else if (retry) scheduleAutoSync(500);
   }
 }
 async function pullFromCloud(options = {}) {
   const automatic = Boolean(options.automatic);
-  if (!ghReady()) return false;
+  if (automatic) return syncOnOpen();
+  if (!ghReady() || syncRunning || databaseReplacing) return false;
+  syncRunning = true;
+  clearTimeout(autoSyncTimer);
+  const version = changeVersion;
   const cfg = ghCfg(); const st = document.getElementById('syncState');
   if (st) st.textContent = '恢复中…';
   try {
-    const got = await ghFetchDbBytes(cfg);
+    const got = await cloudSnapshot(cfg);
     if (automatic && got.status === 404) { if (isDbEmpty()) toast('云端还没有备份:请在有数据的设备点「立即备份并同步」'); return false; }
     if (got.status === 404) throw new Error('云端还没有备份文件');
     const bytes = got.bytes;
-    const localBytes = db.export();
-    const localCounts = dbCounts();
-    loadBytesIntoDb(bytes);
+    if (version !== changeVersion || backupIdentity(cfg) !== backupIdentity()) throw new Error('读取期间本机数据或备份设置已变化，请重新恢复');
+    await replaceDatabase(bytes);
+    rememberRemote(got.sha, cfg);
+    pendingCloudBytes = null; pendingCloudSha = null;
     const counts = dbCounts();
-    const remoteEmpty = !counts.cards && !counts.transactions && !counts.annualFees;
-    const localHasData = localCounts.cards || localCounts.transactions || localCounts.annualFees;
-    if (automatic && remoteEmpty && localHasData) {
-      loadBytesIntoDb(localBytes);
-      setDirty(true);
-      scheduleAutoSync(500);
-      return false;
-    }
-    await persistNow(); setDirty(false); renderAll();
     if (st) st.textContent = '已从云端恢复 ✓ · ' + dbSizeText() + ' · ' + dbSummary();
     if (!automatic) { closeM(); go('home'); }
     if (counts.cards || counts.transactions || counts.annualFees) {
@@ -1739,7 +1876,7 @@ async function pullFromCloud(options = {}) {
     // 自动拉取失败时:本地为空才提示(避免每次打开都弹),本地有数据则保留本地、静默
     if (!automatic || isDbEmpty()) toast('云端同步失败:' + e.message + '(将继续用本机数据)');
     return false;
-  }
+  } finally { syncRunning = false; scheduleAutoSync(); }
 }
 async function doPull() {
   if (!window.confirm('从云端拉取会覆盖本机当前数据,确定?')) return;
@@ -1749,7 +1886,7 @@ async function doPull() {
 function summarizeDb(source) {
   try {
     const cards = allFrom(source, 'SELECT id,user,bank,name,tail,total,fixed,temporary,available,billDay,repayDay FROM cards ORDER BY id');
-    const txs = allFrom(source, 'SELECT id,cardId,date,time,amount,note,type,feeRate,limitAmount,instId,instPeriod FROM transactions ORDER BY id');
+    const txs = allFrom(source, 'SELECT id,cardId,date,time,amount,note,type,feeRate,limitAmount,instId,instPeriod,availableDelta FROM transactions ORDER BY id');
     const afs = allFrom(source, 'SELECT cardId,id,name,chargeDate,requirement,status,note FROM annual_fees ORDER BY cardId,id');
     let insts = [];
     try { insts = allFrom(source, 'SELECT cardId,id,name,principal,periods,postedBase,perPrincipal,perFee,startDate,occupyLimit,status,note,feeMode,monthRate FROM installments ORDER BY cardId,id'); }
@@ -1767,7 +1904,7 @@ function summarizeDb(source) {
     };
   } catch (e) { return { ok: false, err: e.message }; }
 }
-let pendingCloudBytes = null;
+let pendingCloudBytes = null, pendingCloudSha = null, pendingLocalVersion = 0;
 function conflictRow(label, l, c) {
   const diff = String(l) !== String(c);
   const vs = 'padding:7px 6px;border-top:1px solid var(--line);text-align:right;' + (diff ? 'color:var(--red);font-weight:700' : 'color:var(--ink)');
@@ -1800,7 +1937,7 @@ function diffRecords(localRows, cloudRows, keyOf, labelOf, fields, kindName) {
 }
 function computeDiffs(L, C) {
   const cardFields = [['user', '户名'], ['bank', '银行'], ['name', '卡名'], ['tail', '尾号'], ['total', '总额度', CNY], ['fixed', '固定额度', CNY], ['temporary', '临时额度', CNY], ['available', '可用额度', CNY], ['billDay', '账单日'], ['repayDay', '还款日']];
-  const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率'], ['limitAmount', '影响额度金额', CNY], ['instPeriod', '分期期号']];
+  const txFields = [['date', '日期'], ['time', '时间'], ['type', '类型', TXTYPE], ['amount', '金额', CNY], ['note', '备注'], ['feeRate', '手续费率'], ['limitAmount', '影响额度金额', CNY], ['availableDelta', '实际额度变动', CNY], ['instPeriod', '分期期号']];
   const afFields = [['name', '名称'], ['chargeDate', '收取日'], ['requirement', '要求'], ['status', '状态'], ['note', '备注']];
   const instFields = [['name', '名称'], ['principal', '总本金', CNY], ['periods', '总期数'], ['postedBase', '已入账基线'], ['perPrincipal', '每期本金', CNY], ['perFee', '每期手续费', CNY], ['feeMode', '计息方式', v => v === 'declining' ? '等额本金' : '等本等息'], ['monthRate', '年化利率', v => (Number(v || 0) * 1200).toFixed(2) + '%'], ['startDate', '下次入账日'], ['occupyLimit', '占用额度', v => Number(v) ? '是' : '否'], ['status', '状态'], ['note', '备注']];
   const plateFields = [['name', '名称'], ['owner', '归属者'], ['lastWay', '上次方式', wayLabel], ['lastUsedAt', '上次时间']];
@@ -1823,8 +1960,11 @@ function renderDiffList(diffs) {
   const more = diffs.length > cap ? `<p class="muted" style="margin:8px 0 0">仅显示前 ${cap} 处,共 ${diffs.length} 处差异。</p>` : '';
   return `<div style="margin-top:6px">${items}</div>${more}`;
 }
-function showSyncConflict(L, C, cloudBytes) {
+function showSyncConflict(L, C, cloudBytes, sha = null) {
+  clearTimeout(autoSyncTimer);
+  syncVerified = false;
   pendingCloudBytes = cloudBytes;
+  pendingCloudSha = sha; pendingLocalVersion = changeVersion;
   const money = CNY;
   const rows =
     conflictRow('卡片', L.cards + ' 张', C.cards + ' 张') +
@@ -1850,51 +1990,66 @@ function showSyncConflict(L, C, cloudBytes) {
 }
 async function resolveSyncUseCloud() {
   if (!pendingCloudBytes) { closeM(); return; }
-  const bytes = pendingCloudBytes; pendingCloudBytes = null;
+  if (syncRunning || databaseReplacing) return;
+  if (pendingLocalVersion !== changeVersion) { toast('本机账本已变化，请重新核对差异'); await syncOnOpen(); return; }
+  const bytes = pendingCloudBytes, sha = pendingCloudSha, cfg = ghCfg();
+  syncRunning = true; clearTimeout(autoSyncTimer);
+  let recheck = false;
   try {
-    loadBytesIntoDb(bytes); await persistNow(); setDirty(false); renderAll();
+    if (await remoteHead(cfg) !== sha || pendingLocalVersion !== changeVersion) { recheck = true; return; }
+    await replaceDatabase(bytes);
+    rememberRemote(sha, cfg);
+    pendingCloudBytes = null; pendingCloudSha = null;
     closeM(); go('home'); toast('已采用云端数据');
   } catch (e) { toast('载入云端数据失败:' + e.message); }
+  finally { syncRunning = false; if (recheck) await syncOnOpen(); else scheduleAutoSync(); }
 }
 async function resolveSyncUseLocal() {
-  pendingCloudBytes = null; closeM();
-  const ok = await doSync({ automatic: true });
+  if (!pendingCloudBytes || syncRunning) return;
+  const ok = await doSync({ automatic: true, resolveConflict: true });
+  if (ok) closeM();
   toast(ok ? '已用本机数据覆盖云端' : '上传失败,请稍后在「备份与同步」重试');
 }
 // 登录后自动同步:拉取云端 → 与本机对比 → 有差异让用户选(用本机 or 用云端)
 async function syncOnOpen() {
-  if (!ghReady() || !navigator.onLine) return;
+  if (!ghReady() || !unlocked || !navigator.onLine || syncRunning || databaseReplacing) return;
   /* modify by huangle 日期:2026-08-25 库没打开就直接不同步
      summarizeDb 内部是 try/catch 兜底的,拿 null 进去只会静悄悄返回 {ok:false},
      于是错怪到云端头上。这里说清楚是本机还没就绪,云端一个字节都不用碰。 */
   if (!SQL || !db) { toast('本机数据还没打开,这次先不同步'); return; }
+  syncRunning = true; clearTimeout(autoSyncTimer);
+  syncVerified = false;
   const cfg = ghCfg();
-  let cloudBytes;
   try {
-    const got = await ghFetchDbBytes(cfg);
+    const got = await cloudSnapshot(cfg);
+    if (backupIdentity(cfg) !== backupIdentity()) throw new Error('备份设置已变化，请重新同步');
     if (got.status === 404) {
-      // 云端还没有备份:本机有数据就直接上传建立首份备份
-      if (!isDbEmpty()) { await doSync({ automatic: true }); }
+      rememberRemote(null, cfg);
+      pendingCloudBytes = null; pendingCloudSha = null;
+      if (!isDbEmpty()) setDirty(true);
       return;
     }
-    cloudBytes = got.bytes;
-  } catch (e) { toast('云端同步失败:' + e.message + '(继续用本机数据)'); return; }
+    const cloudBytes = got.bytes;
   const local = summarizeDb(db);
+  if (!local.ok) throw new Error('本机账本无法读取:' + local.err);
   let cloud; let cdb;
   /* 云端那份可能是旧版本设备备份的,表结构比现在少列(比如分期的 feeMode/monthRate)。
      临时库先跑一遍 migrate 再读,否则查询会报 no such column,又被当成「无法解析」。
      cdb 只活在内存里,close 掉就没了,不会改动云端文件。 */
-  try { cdb = new SQL.Database(cloudBytes); migrate(cdb); cloud = summarizeDb(cdb); } catch (e) { cloud = { ok: false, err: e.message }; }
+  try { cdb = databaseFromBytes(cloudBytes); cloud = summarizeDb(cdb); } catch (e) { cloud = { ok: false, err: e.message }; }
   finally { if (cdb) cdb.close(); }
   if (!cloud.ok) { toast('云端数据无法解析:' + (cloud.err || '未知原因') + ',继续用本机数据'); return; }
-  if (cloud.empty && !local.empty) { toast('云端备份为空,已保留本机数据(将自动上传)'); setDirty(true); scheduleAutoSync(500); return; }
+  if (cloud.empty && !local.empty) { rememberRemote(got.sha, cfg); pendingCloudBytes = null; pendingCloudSha = null; toast('云端备份为空,已保留本机数据(将自动上传)'); setDirty(true); return; }
   if (local.empty) {
     // 本机无数据:无需询问,直接用云端
-    loadBytesIntoDb(cloudBytes); await persistNow(); setDirty(false); renderAll();
+    await replaceDatabase(cloudBytes);
+    rememberRemote(got.sha, cfg); pendingCloudBytes = null; pendingCloudSha = null;
     if (!cloud.empty) toast('已从云端载入数据'); return;
   }
-  if (local.canon === cloud.canon) { setDirty(false); return; } // 完全一致,静默
-  showSyncConflict(local, cloud, cloudBytes);                    // 有差异,交给用户决定
+  if (local.canon === cloud.canon) { rememberRemote(got.sha, cfg); pendingCloudBytes = null; pendingCloudSha = null; setDirty(false); return; }
+  showSyncConflict(local, cloud, cloudBytes, got.sha);
+  } catch (e) { toast('云端同步失败:' + e.message + '(继续用本机数据)'); }
+  finally { syncRunning = false; scheduleAutoSync(); }
 }
 function openBackupCfg() {
   const cfg = ghCfg();
@@ -1906,17 +2061,20 @@ function openBackupCfg() {
     `<button class="primary-action" onclick="saveBackupCfg()">保存设置</button>`);
 }
 function saveBackupCfg() {
+  clearTimeout(autoSyncTimer); syncVerified = false; verifiedBackup = ''; remoteSha = undefined;
+  pendingCloudBytes = null; pendingCloudSha = null;
   localStorage.setItem(GH_KEY, JSON.stringify({ user: val('gUser'), repo: val('gRepo'), token: document.getElementById('gToken').value.trim() }));
   updateSyncLabel(); toast('已保存备份设置'); openSync();
-  if (dirty) scheduleAutoSync(500);
+  if (unlocked && !syncRunning) syncOnOpen();
 }
 /* ---------- 导出 / 导入 .db ---------- */
 function dbTables(source) {
   return allFrom(source, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(r => r.name);
 }
 function allFrom(source, sql, params = []) {
-  const stmt = source.prepare(sql); stmt.bind(params); const out = [];
-  while (stmt.step()) out.push(stmt.getAsObject()); stmt.free(); return out;
+  const stmt = source.prepare(sql);
+  try { stmt.bind(params); const out = []; while (stmt.step()) out.push(stmt.getAsObject()); return out; }
+  finally { stmt.free(); }
 }
 function tableColumns(source, table) {
   return allFrom(source, `PRAGMA table_info("${String(table).replace(/"/g, '""')}")`).map(r => String(r.name));
@@ -1975,7 +2133,7 @@ function extractLegacyData(source) {
   });
   return { cards, annualFees, transactions };
 }
-function loadBytesIntoDb(bytes) {
+function databaseFromBytes(bytes) {
   let source = new SQL.Database(bytes); let next;
   try {
     const columns = dbTables(source).includes('cards') ? tableColumns(source, 'cards').map(c => c.toLowerCase()) : [];
@@ -1984,10 +2142,35 @@ function loadBytesIntoDb(bytes) {
       migrate(next);
     } else {
       const data = extractLegacyData(source); next = new SQL.Database(); next.exec(SCHEMA);
-      const previous = db; db = next; seedFrom(data); db = previous;
+      seedFrom(data, next);
     }
+    const checked = summarizeDb(next);
+    if (!checked.ok) throw new Error('数据库结构不完整:' + checked.err);
   } catch (error) { if (next && next !== source) next.close(); throw error; } finally { if (source) source.close(); }
+  return next;
+}
+function loadBytesIntoDb(bytes) {
+  ensureWritable();
+  const next = databaseFromBytes(bytes);
   if (db) db.close(); db = next; return next;
+}
+/* 候选库独立构造，成功补记和持久化以后才释放原库。失败时保留原账本。 */
+async function replaceDatabase(bytes, locallyChanged = false) {
+  if (databaseReplacing || pendingPersistence || recordSaving || dueSaving) throw new Error('正在保存数据，请稍后再恢复');
+  const next = databaseFromBytes(bytes), previous = db;
+  clearTimeout(autoSyncTimer);
+  databaseReplacing = true;
+  let posted = 0;
+  try {
+    db = next;
+    posted = await catchUpInstallments({ persist: false });
+    await persistNow();
+  } catch (e) { db = previous; next.close(); throw e; }
+  finally { databaseReplacing = false; }
+  if (previous) previous.close();
+  changeVersion += 1; lastCatchUp = posted;
+  setDirty(locallyChanged || posted > 0);
+  renderAll(); scheduleAutoSync();
 }
 function openExport() {
   setModal('导出备份', `<p class="muted" style="margin:-6px 0 12px">导出一个 .db 文件,可用任意 SQLite 工具打开,或导入到其它设备。</p><button class="primary-action" onclick="doExport()">下载 ledger-${todayStr()}.db</button>`);
@@ -2006,12 +2189,15 @@ function openImport() {
     `<button class="secondary-action" style="border-color:#cfe0ff;background:#f4f8ff;color:var(--blue)" onclick="doImport()">导入并覆盖</button>`);
 }
 async function doImport() {
+  if (syncRunning) { toast('正在同步，请完成后再导入'); return; }
   const f = document.getElementById('impFile').files[0];
   if (!f) { toast('请选择文件'); return; }
   try {
+    const version = changeVersion;
     const buf = await f.arrayBuffer();
-    loadBytesIntoDb(new Uint8Array(buf));
-    await persistNow(); changeVersion += 1; setDirty(true); scheduleAutoSync(); renderAll(); closeM(); toast('导入成功');
+    if (syncRunning || version !== changeVersion) throw new Error('读取文件期间账本已变化，请重新导入');
+    await replaceDatabase(new Uint8Array(buf), true);
+    closeM(); toast('导入成功');
   } catch (e) { toast('导入失败:' + e.message); }
 }
 
