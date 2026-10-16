@@ -143,7 +143,7 @@ test('卡片、详情、逾期列表和拆分还款使用一致的还差', () =>
   assert.match(modal, /due-amt">¥6,000/);
   assert.match(modal, /加起来还要还<\/span><strong>¥6,000/);
   // 还款 6,040 应拆出 40，而不是误把上一期还款也拆成差额。
-  assert.equal(ctx.money2(6040 - ctx.dueToRepay(card).remain), 40);
+  assert.equal(ctx.money2(6040 - ctx.repaymentCapacity(card).remain), 40);
 });
 
 test('本期无消费、额度回满或缺日期时保持现有行为', () => {

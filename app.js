@@ -351,7 +351,7 @@ function overdueInfo(c, ref = todayStr()) {
   return { repay: cycles[0].repay, days: Math.max(1, Math.round((parseDate(ref) - parseDate(cycles[0].repay)) / 86400000)),
     due: sum('due'), paid: sum('paid'), remain: sum('need'), cycles };
 }
-/* 这次还款该冲抵多少:优先用逾期那期的「还差」,没逾期就用当期账单的「还差」(Task C 拿它算差额) */
+/* 展示当前待还：优先展示逾期欠款，没有逾期则展示当期账单。 */
 function dueToRepay(c, ref = todayStr()) {
   const late = overdueInfo(c, ref); if (late) return late;
   if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
@@ -359,10 +359,12 @@ function dueToRepay(c, ref = todayStr()) {
   const cyc = cycleDue(c, bill, ref);
   return { repay: cyc.repay, days: 0, due: cyc.due, paid: cyc.paid, remain: cyc.need };
 }
-/* 拆分时覆盖所有已经进入还款窗口的已记消费，避免把偿还另一张账单的钱误标为差额。 */
+/* 拆分只覆盖还款日期当天已经出账的未还金额（含历史欠款）。
+   上一期还款日已过，不代表下一期已经出账；未出账消费不能吞掉还款差额。
+   多期都已出账时仍合计，保证合并偿还旧账不会被误标为差额。 */
 function repaymentCapacity(c, ref = todayStr()) {
   if (!parseBillDay(c.billDay) || !parseRepayDate(c.repayDay)) return null;
-  return { remain: money2(repaymentLedger(c, ref).filter(b => b.prevRepay < ref).reduce((n, b) => n + b.need, 0)) };
+  return { remain: money2(repaymentLedger(c, ref).filter(b => b.bill <= ref).reduce((n, b) => n + b.need, 0)) };
 }
 
 /* ---------- 数据读取 ---------- */
@@ -1198,7 +1200,7 @@ function openCard(id) {
 }
 
 /* ---------- 记一笔流水 ---------- */
-let recCard = null;                                     // 当前正在记流水的卡,updateDiff 要现算本期应还
+let recCard = null;                                     // 当前正在记流水的卡,updateDiff 要现算已出账单还差
 function diffSplitOn() { return localStorage.getItem(DIFF_SPLIT_KEY) !== '0'; }   // 默认开启拆分
 function toggleDiffSplit() { localStorage.setItem(DIFF_SPLIT_KEY, diffSplitOn() ? '0' : '1'); updateDiff(); }
 function updateSettle() {
@@ -1212,8 +1214,8 @@ function updateSettle() {
   } else box.classList.add('hide');
   updateDiff();
 }
-/* 还款金额超出「本期应还」时提示拆分:大额入额度,差额只留档(不动额度、不算已还)。
-   口径和卡片列表的逾期判定共用 dueToRepay:逾期就冲那期的还差,没逾期就冲当期的还差。 */
+/* 还款超出已出账单还差时提示拆分：大额入额度，差额只留档。
+   预览与保存共用 repaymentCapacity，并按表单所选还款日期计算。 */
 function updateDiff() {
   const box = document.getElementById('diffBox'); if (!box) return;
   const seg = document.querySelector('.type-seg button.on');
@@ -1222,7 +1224,7 @@ function updateDiff() {
   const d = (type === 'repayment' && recCard) ? repaymentCapacity(recCard, val('recDate') || todayStr()) : null;
   const remain = d ? d.remain : 0, extra = money2(amount - remain);
   const save = document.getElementById('recSave');
-  if (!d || remain <= 0.005 || extra <= 0.005) {
+  if (!d || extra <= 0.005) {
     box.classList.add('hide');
     if (save) save.textContent = '保存流水';
     return;
@@ -1233,7 +1235,7 @@ function updateDiff() {
     `大额 <b>${yuan(remain)}</b> 入额度 · 差额 <b>${yuan(extra)}</b> 只留档` +
     `<span class="dbt">${on ? '差额是没记的小额消费,不动可用额度、不算已还' : '关掉就只记 1 笔完整还款(会动额度、算已还)'}</span>`;
   document.getElementById('diffSw').className = 'sw' + (on ? '' : ' off');
-  if (save) save.textContent = on ? '保存(拆成 2 条流水)' : '保存流水';
+  if (save) save.textContent = on ? (remain > 0.005 ? '保存(拆成 2 条流水)' : '保存(仅记还款差额)') : '保存流水';
 }
 function openRecord(id) {
   const c = getCard(id); if (!c) return;
@@ -1260,18 +1262,20 @@ async function saveRecord(id) {
   const amount = parseFloat(val('recAmt')) || 0;
   if (amount <= 0) { toast('请输入金额'); return; }
   const date = val('recDate') || todayStr(), note = val('recNote');
-  /* 拆两笔必须先算好本期还差:第一笔记进去之后 paid 就变了,再算会得到 0。
-     modify by huangle 日期:2026-09-18 差额笔语义收紧:大额笔(=本期还差)照常入额度、入统计;
+  /* 拆两笔必须先算好已出账单还差:第一笔记进去之后 paid 就变了,再算会得到 0。
+     modify by huangle 日期:2026-09-18 差额笔语义收紧:大额笔(=已出账单还差)照常入额度、入统计;
      差额笔 limitAmount=0 —— 用户只记大额消费,差额在记录世界里是「没记的小额消费」的对应还款,
      入额度只会把 available 顶高、算已还只会把后面的「还差」压成 0(cycleDue 按备注把它排除)。
      它只留档对账:流水里带「差额 · 不动额度」小标;删除走 reverseFromAvailable 同样按 0 反算,一来一回一致。 */
   const c = getCard(id);
   const d = (type === 'repayment' && diffSplitOn() && c) ? repaymentCapacity(c, date) : null;
   const remain = d ? d.remain : 0, extra = money2(amount - remain);
-  if (d && remain > 0.005 && extra > 0.005) {
-    await addTransactions(id, [{ type, amount: remain, date, note },
-      { type, amount: extra, date, note: '还款差额', limitAmount: 0 }]);
-    renderAll(); openCard(id); toast('已记 2 笔 · 差额 ' + yuan(extra));
+  if (d && extra > 0.005) {
+    const entries = [];
+    if (remain > 0.005) entries.push({ type, amount: remain, date, note });
+    entries.push({ type, amount: extra, date, note: '还款差额', limitAmount: 0 });
+    await addTransactions(id, entries);
+    renderAll(); openCard(id); toast(`已记 ${entries.length} 笔 · 差额 ` + yuan(extra));
     return;
   }
   await addTransaction(id, { type, amount, date, note });

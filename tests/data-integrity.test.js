@@ -10,6 +10,10 @@ before(async () => { SQL = await require('../vendor/sql-wasm.js')(); });
 
 function app(t) {
   const storage = new Map(), timers = new Map(), elements = { recSave: { disabled: false } }, messages = [], snapshots = [];
+  const diffClasses = new Set(['hide']);
+  elements.diffBox = { classList: { add: c => diffClasses.add(c), remove: c => diffClasses.delete(c), contains: c => diffClasses.has(c) } };
+  elements.diffText = { innerHTML: '' };
+  elements.diffSw = { className: '' };
   let timerId = 0, form = {}, type = 'spend';
   const ctx = vm.createContext({
     localStorage: { getItem: k => storage.get(k) || null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
@@ -68,16 +72,115 @@ test('R1：逾期补还只结清旧账，下一期仍需还款', async t => {
   const next = ctx.cycleDue(c, ctx.parseDate('2026-10-22'), '2026-10-23');
   assert.equal(next.paid, 0); assert.equal(next.need, 5900);
 });
-test('R1：一笔还两期按旧账优先分配，差额拆分不吞掉另一期', async t => {
+test('R1：两期都已出账后合并还款，差额拆分不吞掉另一期', async t => {
   const { ctx, setForm } = app(t);
   await add(ctx, 'spend', '2026-08-25', 6000);
   await add(ctx, 'spend', '2026-09-25', 5900);
-  setForm({ recAmt: '11940', recDate: '2026-10-15' }, 'repayment');
+  setForm({ recAmt: '11940', recDate: '2026-10-23' }, 'repayment');
   await ctx.saveRecord(1);
   assert.equal(ctx.allTx().find(x => x.note === '还款差额').amount, 40);
   assert.equal(ctx.overdueInfo(ctx.getCard(1), '2026-11-12'), null);
   const ledger = ctx.repaymentLedger(ctx.getCard(1), '2026-11-12');
   assert.equal(ledger.reduce((n, x) => n + x.paid, 0), 11900);
+});
+
+async function repaymentFixture(t) {
+  const env = app(t), { ctx } = env;
+  ctx.run('UPDATE cards SET available=20000 WHERE id=1');
+  await add(ctx, 'spend', '2026-08-25', 6000);
+  await add(ctx, 'spend', '2026-09-25', 5900);
+  state(ctx, 'recCard=getCard(1)');
+  return env;
+}
+
+test('还款拆分：下一期未出账消费不吞掉差额，预览、额度和账单一致', async t => {
+  const { ctx, setForm, elements, snapshots } = await repaymentFixture(t);
+  setForm({ recAmt: '6040', recDate: '2026-10-15', recNote: '银行还款' }, 'repayment');
+  ctx.updateDiff();
+  assert.equal(elements.diffBox.classList.contains('hide'), false);
+  assert.match(elements.diffText.innerHTML, /大额 <b>¥6,000<\/b> 入额度 · 差额 <b>¥40<\/b> 只留档/);
+  assert.equal(elements.recSave.textContent, '保存(拆成 2 条流水)');
+  const before = ctx.getCard(1).available, saves = snapshots.length;
+  await ctx.saveRecord(1);
+  const payments = ctx.allTx().filter(x => x.type === 'repayment');
+  assert.equal(payments.length, 2);
+  const main = payments.find(x => x.note === '银行还款'), diff = payments.find(x => x.note === '还款差额');
+  assert.equal(main.amount, 6000); assert.equal(main.availableDelta, 6000);
+  assert.equal(diff.amount, 40); assert.equal(diff.limitAmount, 0); assert.equal(diff.availableDelta, 0);
+  assert.equal(ctx.getCard(1).available, before + 6000);
+  assert.equal(snapshots.length, saves + 1);
+  assert.equal(ctx.cycleDue(ctx.getCard(1), ctx.parseDate('2026-09-22'), '2026-10-15').need, 0);
+  assert.equal(ctx.cycleDue(ctx.getCard(1), ctx.parseDate('2026-10-22'), '2026-10-23').need, 5900);
+  await ctx.deleteTransaction(diff.id);
+  assert.equal(ctx.getCard(1).available, before + 6000);
+  await ctx.deleteTransaction(main.id);
+  assert.equal(ctx.getCard(1).available, before);
+});
+
+test('还款拆分：补记按所选日期判断账单，账单日当天才纳入下一期', async t => {
+  const { ctx, setForm, elements } = await repaymentFixture(t);
+  ctx.todayStr = () => '2026-10-23';
+  for (const [date, remain] of [['2026-10-21', 6000], ['2026-10-22', 11900]]) {
+    assert.equal(ctx.repaymentCapacity(ctx.getCard(1), date).remain, remain);
+    setForm({ recAmt: '6040', recDate: date }, 'repayment');
+    ctx.updateDiff();
+    assert.equal(elements.diffBox.classList.contains('hide'), date === '2026-10-22');
+  }
+  setForm({ recAmt: '6040', recDate: '2026-10-15' }, 'repayment');
+  await ctx.saveRecord(1);
+  assert.equal(ctx.allTx().find(x => x.note === '还款差额').amount, 40);
+});
+
+test('还款拆分：已部分偿还时只把剩余账单金额加回额度', async t => {
+  const { ctx, setForm } = await repaymentFixture(t);
+  await add(ctx, 'repayment', '2026-10-10', 1000.25);
+  setForm({ recAmt: '5040', recDate: '2026-10-15' }, 'repayment');
+  const before = ctx.getCard(1).available;
+  await ctx.saveRecord(1);
+  assert.equal(ctx.allTx().find(x => x.note === '还款差额').amount, 40.25);
+  assert.equal(ctx.getCard(1).available, ctx.money2(before + 4999.75));
+});
+
+test('还款拆分：已出账单结清后再次还款全部留作差额，不增加额度', async t => {
+  const { ctx, setForm, elements } = await repaymentFixture(t);
+  await add(ctx, 'repayment', '2026-10-11', 6000);
+  state(ctx, 'recCard=getCard(1)');
+  setForm({ recAmt: '40', recDate: '2026-10-15' }, 'repayment');
+  ctx.updateDiff();
+  assert.equal(elements.diffBox.classList.contains('hide'), false);
+  assert.equal(elements.recSave.textContent, '保存(仅记还款差额)');
+  const before = ctx.getCard(1).available;
+  await ctx.saveRecord(1);
+  const diff = ctx.allTx().find(x => x.note === '还款差额');
+  assert.equal(diff.amount, 40); assert.equal(diff.availableDelta, 0);
+  assert.equal(ctx.getCard(1).available, before);
+  assert.equal(ctx.allTx().filter(x => x.type === 'repayment').length, 2);
+  assert.equal(ctx.cycleDue(ctx.getCard(1), ctx.parseDate('2026-10-22'), '2026-10-23').need, 5900);
+});
+
+for (const amount of [5000, 6000]) {
+  test(`还款拆分：还款 ${amount} 未超账单时保持单笔正常还款`, async t => {
+    const { ctx, setForm, elements } = await repaymentFixture(t);
+    setForm({ recAmt: String(amount), recDate: '2026-10-15' }, 'repayment');
+    ctx.updateDiff();
+    assert.equal(elements.diffBox.classList.contains('hide'), true);
+    const before = ctx.getCard(1).available;
+    await ctx.saveRecord(1);
+    assert.equal(ctx.allTx().filter(x => x.type === 'repayment').length, 1);
+    assert.equal(ctx.getCard(1).available, before + amount);
+  });
+}
+
+test('还款拆分：主动关闭开关时仍按完整金额增加额度', async t => {
+  const { ctx, setForm, elements } = await repaymentFixture(t);
+  setForm({ recAmt: '6040', recDate: '2026-10-15' }, 'repayment');
+  ctx.toggleDiffSplit();
+  assert.equal(elements.recSave.textContent, '保存流水');
+  const before = ctx.getCard(1).available;
+  await ctx.saveRecord(1);
+  const payments = ctx.allTx().filter(x => x.type === 'repayment');
+  assert.equal(payments.length, 1); assert.equal(payments[0].amount, 6040);
+  assert.equal(ctx.getCard(1).available, before + 6040);
 });
 test('R2：无新消费的旧账数月后仍提醒，部分偿还后剩余正确', async t => {
   const { ctx } = app(t);
